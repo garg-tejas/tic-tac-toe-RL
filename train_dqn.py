@@ -1,5 +1,6 @@
 from dqn_ai import DQNTicTacToe
 import time
+from utils import get_model_path
 import os
 
 def main():
@@ -23,7 +24,7 @@ def main():
     agent.train_curriculum(episodes=20000)  # Train with more episodes
     
     # Save trained model
-    save_path = "dqn_ttt.pth"
+    save_path = get_model_path("dqn")
     agent.save_model(save_path)
     print(f"Model saved to {save_path}")
     

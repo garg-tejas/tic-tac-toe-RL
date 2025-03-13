@@ -5,6 +5,7 @@ import random
 import numpy as np
 from collections import deque
 import os
+from utils import get_model_path, get_plot_path
 
 class DQN(nn.Module):
     def __init__(self, input_size=9, hidden_size=64, output_size=9):
@@ -38,7 +39,6 @@ class DQNTicTacToe:
         self.batch_size = batch_size
 
         self.training_stats = {'wins': [], 'losses': [], 'draws': []}  # For monitoring progress
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.player = "O"
         self.load_model()  # Load existing model if available
 
@@ -141,34 +141,53 @@ class DQNTicTacToe:
         self.target_net.load_state_dict(self.policy_net.state_dict())
     
     def train(self, episodes=50000, target_update=1000):
-        window_size = 1000
         wins, losses, draws = 0, 0, 0
+        stats_window = 1000  # Number of episodes between stats updates
+
         for episode in range(episodes):
             board = [" "] * 9
             state = self.get_state(board)
             done = False
+
             while not done:
                 action = self.choose_action(board)
                 board[action] = self.player  # Use self.player instead of hardcoded "X"
                 next_state = self.get_state(board)
                 reward, done = self.reward_function(board)
-                self.store_experience(state, action, reward, next_state, done)
-                self.train_step()
-                state = next_state
+
+                # Track game outcome
+                if done:
+                    winner = self.check_winner(board)
+                    if winner == self.player:
+                        wins += 1
+                    elif winner == "draw":
+                        draws += 1
+                    else:
+                        losses += 1
+
+                    self.store_experience(state, action, reward, next_state, done)
+                    self.train_step()
+                    state = next_state
             
             if episode % target_update == 0:
                 self.update_target_network()
 
-            if episode % window_size == 0 and episode > 0:
-                wins = sum(1 for _ in range(100) if self.evaluate_against_random()[0])
-                losses = sum(1 for _ in range(100) if self.evaluate_against_random()[1])
-                draws = 100 - wins - losses
-            
-            self.training_stats['wins'].append(wins/100)
-            self.training_stats['losses'].append(losses/100)
-            self.training_stats['draws'].append(draws/100)
-            
-            print(f"Episode {episode}/{episodes}, Win rate: {wins/100:.2f}, Loss rate: {losses/100:.2f}")
+            # Calculate and report statistics every 1000 episodes
+            if episode % stats_window == 0 and episode > 0:
+                win_rate = wins / stats_window
+                loss_rate = losses / stats_window
+                draw_rate = draws / stats_window
+                
+                # Store stats
+                self.training_stats['wins'].append(win_rate)
+                self.training_stats['losses'].append(loss_rate)
+                self.training_stats['draws'].append(draw_rate)
+                            
+                # Print current stats
+                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                
+                # Reset counters
+                wins, losses, draws = 0, 0, 0
             
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
     
@@ -228,12 +247,14 @@ class DQNTicTacToe:
         """Make a move during an actual game."""
         return self.choose_action(board, game_mode=True)
     
-    def save_model(self, filename="dqn_ttt.pth"):
+    def save_model(self, filename=None):
         # Save model weights
-        torch.save(self.policy_net.state_dict(), filename)
+        model_path = get_model_path("dqn") if filename is None else filename
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        torch.save(self.policy_net.state_dict(), model_path)
         
         # Save training stats
-        stats_filename = filename.replace('.pth', '_stats.pkl')
+        stats_filename = model_path.replace('.pth', '_stats.pkl')
         try:
             import pickle
             with open(stats_filename, 'wb') as f:
@@ -241,23 +262,24 @@ class DQNTicTacToe:
         except Exception as e:
             print(f"Error saving training stats: {e}")
     
-    def load_model(self, filename="dqn_ttt.pth"):
+    def load_model(self, filename=None):
         try:
-            if os.path.exists(filename):
-                self.policy_net.load_state_dict(torch.load(filename, map_location=self.device))
+            model_path = get_model_path("dqn") if filename is None else filename
+            if os.path.exists(model_path):
+                self.policy_net.load_state_dict(torch.load(model_path, map_location=self.device))
                 self.update_target_network()
                 
                 # Try to load training stats
-                stats_filename = filename.replace('.pth', '_stats.pkl')
+                stats_filename = model_path.replace('.pth', '_stats.pkl')
                 if os.path.exists(stats_filename):
                     import pickle
                     with open(stats_filename, 'rb') as f:
                         self.training_stats = pickle.load(f)
                 
-                print(f"DQN model loaded from {filename}")
+                print(f"DQN model loaded from {model_path}")
                 return True
             else:
-                print(f"Model file {filename} not found, using untrained model.")
+                print(f"Model file {model_path} not found, using untrained model.")
                 return False
         except Exception as e:
             print(f"Error loading DQN model: {e}")
@@ -290,11 +312,11 @@ class DQNTicTacToe:
         
         # Second stage: train against minimax with limited depth
         print("Stage 2: Training against easy minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=1)
+        self.train_against_minimax(total_episodes // 4, depth_limit=2)
         
         # Third stage: train against harder minimax
         print("Stage 3: Training against harder minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=2)
+        self.train_against_minimax(total_episodes // 4, depth_limit=4)
         
         # Fourth stage: full self-play with DQN
         print("Stage 4: Training with full self-play...")
@@ -305,6 +327,9 @@ class DQNTicTacToe:
     def train_against_random(self, episodes=5000):
         """Train against a random opponent."""
         opponent_player = 'X' if self.player == 'O' else 'O'
+        wins, losses, draws = 0, 0, 0
+        stats_window = 1000  # Number of episodes between stats updates
+
         for episode in range(episodes):
             board = [" "] * 9
             state = self.get_state(board)
@@ -316,12 +341,33 @@ class DQNTicTacToe:
                 board[action] = self.player
                 reward, done = self.reward_function(board)
                 
+                # Check if game ended after agent's move
+                if done:
+                    winner = self.check_winner(board)
+                    if winner == self.player:
+                        wins += 1
+                    elif winner == "draw":
+                        draws += 1
+                    else:
+                        losses += 1
+
                 if not done:
                     # Random opponent's turn (O)
                     valid_moves = self.get_valid_moves(board)
                     opponent_action = random.choice(valid_moves)
                     board[opponent_action] = opponent_player
                     reward, done = self.reward_function(board)
+
+                    # Check if game ended after opponent's move
+                    if done:
+                        winner = self.check_winner(board)
+                        if winner == self.player:
+                            wins += 1
+                        elif winner == "draw":
+                            draws += 1
+                        else:
+                            losses += 1
+                            
                     # Invert reward since this was opponent's move
                     reward = -reward
                 
@@ -333,16 +379,23 @@ class DQNTicTacToe:
             if episode % 100 == 0:
                 self.update_target_network()
                 self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-                if episode % 1000 == 0:
-                    print(f"Episode {episode}/{episodes}, Epsilon: {self.epsilon:.2f}")
 
-            if episode % 1000 == 0:
-                wins = sum(1 for _ in range(100) if self.evaluate_against_random()[0])
-                losses = sum(1 for _ in range(100) if self.evaluate_against_random()[1])
-                draws = 100 - wins - losses
-                self.training_stats['wins'].append(wins/100)
-                self.training_stats['losses'].append(losses/100)
-                self.training_stats['draws'].append(draws/100)
+            # Calculate and report statistics every 1000 episodes
+            if episode % stats_window == 0 and episode > 0:
+                win_rate = wins / stats_window
+                loss_rate = losses / stats_window
+                draw_rate = draws / stats_window
+                
+                # Store stats
+                self.training_stats['wins'].append(win_rate)
+                self.training_stats['losses'].append(loss_rate)
+                self.training_stats['draws'].append(draw_rate)
+                            
+                # Print current stats
+                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                
+                # Reset counters
+                wins, losses, draws = 0, 0, 0
 
     def convert_1d_to_2d(self, board_1d):
             """Convert 1D board to 2D format for minimax."""
@@ -352,13 +405,16 @@ class DQNTicTacToe:
                 board_2d[row][col] = board_1d[i] if board_1d[i] != " " else None
             return board_2d
     
-    def train_against_minimax(self, episodes=5000, depth_limit=2):
+    def train_against_minimax(self, episodes=5000, depth_limit=1):
         """Train against a minimax opponent with limited depth."""
         opponent_player = 'X' if self.player == 'O' else 'O'
         if not hasattr(self, 'minimax_ai'):
             from minimax_ai import MinimaxAI
             self.minimax_ai = MinimaxAI()
         
+        wins, losses, draws = 0, 0, 0
+        stats_window = 1000  # Number of episodes between stats updates
+
         for episode in range(episodes):
             board = [" "] * 9
             state = self.get_state(board)
@@ -370,6 +426,16 @@ class DQNTicTacToe:
                 board[action] = self.player
                 reward, done = self.reward_function(board)
                 
+                # Check if game ended after agent's move
+                if done:
+                    winner = self.check_winner(board)
+                    if winner == self.player:
+                        wins += 1
+                    elif winner == "draw":
+                        draws += 1
+                    else:
+                        losses += 1
+
                 if not done:
                     # Minimax opponent's turn
                     board_2d = self.convert_1d_to_2d(board)
@@ -379,7 +445,8 @@ class DQNTicTacToe:
                             self.minimax_ai.set_player(opponent_player)
                     except Exception as e:
                         print(f"Warning: Could not set player for minimax AI: {e}")
-                    move_2d = self.minimax_ai.best_move(board_2d)
+                    
+                    move_2d = self.minimax_ai.best_move(board_2d, depth_limit)
                     
                     # Handle case where minimax returns None
                     if move_2d is None:
@@ -391,6 +458,17 @@ class DQNTicTacToe:
                     if opponent_action is not None:
                         board[opponent_action] = opponent_player
                         reward, done = self.reward_function(board)
+
+                        # Check if game ended after opponent's move
+                        if done:
+                            winner = self.check_winner(board)
+                            if winner == self.player:
+                                wins += 1
+                            elif winner == "draw":
+                                draws += 1
+                            else:
+                                losses += 1
+                                
                         # Invert reward since this was opponent's move
                         reward = -reward
                 
@@ -402,73 +480,76 @@ class DQNTicTacToe:
             if episode % 100 == 0:
                 self.update_target_network()
                 self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-                if episode % 1000 == 0:
-                    print(f"Episode {episode}/{episodes}, Epsilon: {self.epsilon:.2f}")
-
-            if episode % 1000 == 0:
-                wins = sum(1 for _ in range(100) if self.evaluate_against_random()[0])
-                losses = sum(1 for _ in range(100) if self.evaluate_against_random()[1])
-                draws = 100 - wins - losses
-                self.training_stats['wins'].append(wins/100)
-                self.training_stats['losses'].append(losses/100)
-                self.training_stats['draws'].append(draws/100)
+            
+            # Calculate and report statistics every 1000 episodes
+            if episode % stats_window == 0 and episode > 0:
+                win_rate = wins / stats_window
+                loss_rate = losses / stats_window
+                draw_rate = draws / stats_window
+                
+                # Store stats
+                self.training_stats['wins'].append(win_rate)
+                self.training_stats['losses'].append(loss_rate)
+                self.training_stats['draws'].append(draw_rate)
+                            
+                # Print current stats
+                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                
+                # Reset counters
+                wins, losses, draws = 0, 0, 0
 
     def plot_training_progress(self):
-        """Plot training progress over time."""
+        """Plot training progress over time with improved visualization."""
         try:
             import matplotlib.pyplot as plt
+            import numpy as np
+            from scipy.interpolate import make_interp_spline
             
             if not self.training_stats['wins']:
                 print("No training statistics available.")
                 return
             
-            episodes = range(len(self.training_stats['wins']))
+            # Create figure with larger size and better resolution
+            plt.figure(figsize=(12, 7), dpi=100)
             
-            plt.figure(figsize=(10, 6))
-            plt.plot(episodes, self.training_stats['wins'], 'g-', label='Wins')
-            plt.plot(episodes, self.training_stats['losses'], 'r-', label='Losses')
-            plt.plot(episodes, self.training_stats['draws'], 'b-', label='Draws')
+            # Get episodes array
+            episodes = np.array(range(len(self.training_stats['wins']))) * 1000  # Actual episode numbers
             
-            plt.title('DQN Agent Training Progress')
-            plt.xlabel('Training Windows (1000 episodes each)')
-            plt.ylabel('Rate')
-            plt.legend()
-            plt.grid(True)
+            # Plot each metric with interpolated smooth lines
+            metrics = ['wins', 'losses', 'draws']
+            colors = ['green', 'red', 'blue']
+            labels = ['Wins', 'Losses', 'Draws']
             
-            plt.savefig('dqn_training_progress.png')
+            for metric, color, label in zip(metrics, colors, labels):
+                # Convert to numpy array
+                values = np.array(self.training_stats[metric])
+                
+                # Create smooth line
+                X_smooth = np.linspace(episodes.min(), episodes.max(), 300)
+                spl = make_interp_spline(episodes, values, k=3)
+                Y_smooth = spl(X_smooth)
+                
+                # Plot smooth line with points
+                plt.plot(X_smooth, Y_smooth, color=color, alpha=0.8, label=label)
+                plt.scatter(episodes, values, color=color, alpha=0.4, s=30)
+            
+            plt.title('DQN Agent Learning Progress', fontsize=14, pad=20)
+            plt.xlabel('Training Episodes', fontsize=12)
+            plt.ylabel('Rate', fontsize=12)
+            
+            # Customize grid
+            plt.grid(True, linestyle='--', alpha=0.7)
+            
+            # Customize legend
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            
+            # Add some padding to the layout
+            plt.tight_layout()
+            
+            # Save with high DPI
+            plt.savefig(get_plot_path("dqn"), dpi=300, bbox_inches='tight')
             plt.show()
             
-        except ImportError:
-            print("Matplotlib not available. Install it to visualize training progress.")
-
-    def evaluate_against_random(self):
-        """Evaluate agent against random opponent. Returns (win, loss) boolean."""
-        board = [" "] * 9
-        opponent_player = 'X' if self.player == 'O' else 'O'
-        
-        # Decide who goes first (randomly)
-        current_player = random.choice([self.player, opponent_player])
-        
-        while True:
-            if current_player == self.player:
-                # Agent's turn
-                action = self.choose_action(board, game_mode=True)
-            else:
-                # Random opponent's turn
-                valid_moves = self.get_valid_moves(board)
-                if not valid_moves:
-                    break
-                action = random.choice(valid_moves)
-            
-            if action is None:  # No valid moves
-                break
-                
-            board[action] = current_player
-            winner = self.check_winner(board)
-            if winner is not None or " " not in board:
-                break  # Game over
-                
-            current_player = opponent_player if current_player == self.player else self.player
-        
-        winner = self.check_winner(board)
-        return (winner == self.player, winner == opponent_player)
+        except ImportError as e:
+            print(f"Required plotting libraries not available: {e}")
+            print("Install matplotlib and scipy for visualization.")

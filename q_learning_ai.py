@@ -5,6 +5,7 @@ import os
 import math
 from collections import deque
 from minimax_ai import MinimaxAI
+from utils import get_model_path, get_plot_path
 
 class QLearningTicTacToe:
     def __init__(self, alpha=0.1, gamma=0.95, epsilon=0.1, game_mode=False):
@@ -179,6 +180,9 @@ class QLearningTicTacToe:
                 self.training_stats['losses'].append(loss_rate)
                 draw_rate = draws / window_size
                 self.training_stats['draws'].append(draw_rate)
+                            
+                # Print current stats
+                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
                 
                 # Adjust epsilon based on performance
                 if win_rate > 0.6:
@@ -202,9 +206,6 @@ class QLearningTicTacToe:
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
-                
-                # Print progress
-                print(f"Episode {episode}/{episodes}, Win rate: {win_rate:.2f}, Loss rate: {loss_rate:.2f}, Draw rate: {draw_rate:.2f}")
             
             # Play out the game
             while True:
@@ -255,11 +256,14 @@ class QLearningTicTacToe:
     
     def train_against_random(self, episodes=5000):
         """Train against a random opponent."""
+        wins, losses, draws = 0, 0, 0
+        stats_window = 1000  # Number of episodes between stats updates
+
         for episode in range(episodes):
             board = [" "] * 9
             current_player = "X"  # 'X' starts
             game_history = []
-            
+
             # Adaptive epsilon decay
             self.epsilon = max(0.01, self.epsilon * 0.999)
             
@@ -284,8 +288,16 @@ class QLearningTicTacToe:
                 if current_player == "O":
                     game_history.append((state, action, reward, next_state, done))
                 
+                # Check if game is over and track result
                 if done:
-                    break  # Game over
+                    winner = self.check_winner(board)
+                    if winner == "O":
+                        wins += 1
+                    elif winner == "X":
+                        losses += 1
+                    elif winner == "draw":
+                        draws += 1
+                    break
                 
                 current_player = "O" if current_player == "X" else "X"
             
@@ -296,9 +308,28 @@ class QLearningTicTacToe:
             
             if episode % 10 == 0:
                 self.learn_from_replay_buffer()
+
+            if episode % stats_window == 0 and episode > 0:
+                win_rate = wins / stats_window
+                loss_rate = losses / stats_window
+                draw_rate = draws / stats_window
     
-    def train_against_minimax(self, episodes=5000, depth_limit=2):
+                # Store stats
+                self.training_stats['wins'].append(win_rate)
+                self.training_stats['losses'].append(loss_rate)
+                self.training_stats['draws'].append(draw_rate)
+                            
+                # Print current stats
+                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+
+                # Reset counters
+                wins, losses, draws = 0, 0, 0
+    
+    def train_against_minimax(self, episodes=5000, depth_limit=1):
         """Train against a minimax opponent with limited depth."""
+        wins, losses, draws = 0, 0, 0
+        stats_window = 1000  # Number of episodes between stats updates
+        
         for episode in range(episodes):
             board = [" "] * 9
             current_player = "X"  # 'X' starts (minimax player)
@@ -313,7 +344,7 @@ class QLearningTicTacToe:
                 if current_player == "X":  # Minimax opponent
                     # Convert 1D board to 2D for minimax
                     board_2d = self.convert_1d_to_2d(board)
-                    move_2d = self.minimax_ai.best_move(board_2d)
+                    move_2d = self.minimax_ai.best_move(board_2d, depth_limit)
                     
                     # Handle None return case
                     if move_2d is None:
@@ -338,7 +369,14 @@ class QLearningTicTacToe:
                     game_history.append((state, action, reward, next_state, reward != 0 or " " not in board))
                 
                 if reward != 0 or " " not in board:
-                    break  # Game over
+                    winner = self.check_winner(board)
+                    if winner == "O":
+                        wins += 1
+                    elif winner == "X":
+                        losses += 1
+                    else:
+                        draws += 1
+                    break
                 
                 current_player = "O" if current_player == "X" else "X"
             
@@ -349,6 +387,22 @@ class QLearningTicTacToe:
             
             if episode % 10 == 0:
                 self.learn_from_replay_buffer()
+
+            if episode % stats_window == 0 and episode > 0:
+                win_rate = wins / stats_window
+                loss_rate = losses / stats_window
+                draw_rate = draws / stats_window
+    
+                # Store stats
+                self.training_stats['wins'].append(win_rate)
+                self.training_stats['losses'].append(loss_rate)
+                self.training_stats['draws'].append(draw_rate)
+                            
+                # Print current stats
+                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+
+                # Reset counters
+                wins, losses, draws = 0, 0, 0
 
     def play_move(self, board):
         """Make a move during an actual game."""
@@ -361,27 +415,31 @@ class QLearningTicTacToe:
         action = self.play_move(board_1d)
         return self.convert_index_to_coordinates(action)
     
-    def save_q_table(self, filename="q_table.pkl"):
+    def save_q_table(self, filename=None):
         try:
-            with open(filename, "wb") as f:
+            model_path = get_model_path("q_learning") if filename is None else filename
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            with open(model_path, "wb") as f:
                 pickle.dump((self.q_table, self.opponent_q_table, self.training_stats), f)
-            print(f"Q-table saved to {filename}")
+            print(f"Q-table saved to {model_path}")
         except Exception as e:
             print(f"Error saving Q-table: {e}")
-    
-    def load_q_table(self, filename="q_table.pkl"):
+
+    def load_q_table(self, filename=None):
         try:
-            with open(filename, "rb") as f:
-                data = pickle.load(f)
-                if len(data) == 2:
-                    self.q_table, self.opponent_q_table = data
-                else:
-                    self.q_table, self.opponent_q_table, self.training_stats = data
-                print(f"Q-table loaded from {filename}")
-                return True  # Successfully loaded
-        except FileNotFoundError:
-            print("No pre-trained Q-table found. Starting fresh.")
-            return False  # Failed to load
+            model_path = get_model_path("q_learning") if filename is None else filename
+            if os.path.exists(model_path):
+                with open(model_path, "rb") as f:
+                    data = pickle.load(f)
+                    if len(data) == 2:
+                        self.q_table, self.opponent_q_table = data
+                    else:
+                        self.q_table, self.opponent_q_table, self.training_stats = data
+                    print(f"Q-table loaded from {model_path}")
+                    return True  # Successfully loaded
+            else:
+                print(f"No pre-trained Q-table found at {model_path}. Starting fresh.")
+                return False  # Failed to load
         except Exception as e:
             print(f"Error loading Q-table: {e}")
             return False  # Failed to load
@@ -438,15 +496,15 @@ class QLearningTicTacToe:
         self.train_against_random(total_episodes // 4)
         
         # Second stage: train against minimax with limited depth
-        print("Stage 2: Training against easy minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=1)
-        
-        # Third stage: train against harder minimax
-        print("Stage 3: Training against harder minimax...")
+        print("\nStage 2: Training against easy minimax...")
         self.train_against_minimax(total_episodes // 4, depth_limit=2)
         
+        # Third stage: train against harder minimax
+        print("\nStage 3: Training against harder minimax...")
+        self.train_against_minimax(total_episodes // 4, depth_limit=4)
+        
         # Fourth stage: full self-play
-        print("Stage 4: Training with full self-play...")
+        print("\nStage 4: Training with full self-play...")
         self.train(total_episodes // 4, use_replay=True, use_ucb=True)
         
         print("Curriculum training complete!")
@@ -558,78 +616,58 @@ class QLearningTicTacToe:
             if i < 6:
                 print("-" * 11)
 
-    def evaluate_agent(self, num_games=1000, opponent_type="random"):
-        """Evaluate the agent against different opponents."""
-        wins, losses, draws = 0, 0, 0
-        
-        for _ in range(num_games):
-            board = [" "] * 9
-            current_player = "X"  # 'X' starts
-            
-            while True:
-                if current_player == "X":  # Opponent
-                    if opponent_type == "random":
-                        valid_moves = self.get_valid_moves(board)
-                        action = random.choice(valid_moves) if valid_moves else None
-                    elif opponent_type == "minimax":
-                        action = self.minimax_move(board, 3)
-                    else:  # Self-play
-                        action = self.choose_action(board, self.opponent_q_table, game_mode=True)
-                else:  # Our agent
-                    action = self.choose_action(board, self.q_table, game_mode=True)
-                
-                if action is None:  # No valid moves
-                    break
-                    
-                board[action] = current_player
-                
-                winner = self.check_winner(board)
-                if winner is not None:
-                    if winner == "O":
-                        wins += 1
-                    elif winner == "X":
-                        losses += 1
-                    else:
-                        draws += 1
-                    break
-                
-                current_player = "O" if current_player == "X" else "X"
-        
-        win_rate = wins / num_games
-        loss_rate = losses / num_games
-        draw_rate = draws / num_games
-        
-        print(f"Evaluation against {opponent_type} opponent:")
-        print(f"Win rate: {win_rate:.2f}")
-        print(f"Loss rate: {loss_rate:.2f}")
-        print(f"Draw rate: {draw_rate:.2f}")
-        
-        return win_rate, loss_rate, draw_rate
-
     def plot_training_progress(self):
-        """Plot training progress over time."""
+        """Plot training progress over time with improved visualization."""
         try:
             import matplotlib.pyplot as plt
+            import numpy as np
+            from scipy.interpolate import make_interp_spline
             
             if not self.training_stats['wins']:
                 print("No training statistics available.")
                 return
             
-            episodes = range(len(self.training_stats['wins']))
+            # Create figure with larger size and better resolution
+            plt.figure(figsize=(12, 7), dpi=100)
             
-            plt.figure(figsize=(10, 6))
-            plt.plot(episodes, self.training_stats['wins'], 'g-', label='Wins')
-            plt.plot(episodes, self.training_stats['losses'], 'r-', label='Losses')
-            plt.plot(episodes, self.training_stats['draws'], 'b-', label='Draws')
+            # Get episodes array
+            episodes = np.array(range(len(self.training_stats['wins']))) * 1000  # Actual episode numbers
             
-            plt.title('Q-Learning Agent Training Progress')
-            plt.xlabel('Training Windows (1000 episodes each)')
-            plt.ylabel('Rate')
-            plt.legend()
-            plt.grid(True)
+            # Plot each metric with interpolated smooth lines
+            metrics = ['wins', 'losses', 'draws']
+            colors = ['green', 'red', 'blue']
+            labels = ['Wins', 'Losses', 'Draws']
             
-            plt.savefig('training_progress.png')
+            for metric, color, label in zip(metrics, colors, labels):
+                # Convert to numpy array
+                values = np.array(self.training_stats[metric])
+                
+                # Create smooth line
+                X_smooth = np.linspace(episodes.min(), episodes.max(), 300)
+                spl = make_interp_spline(episodes, values, k=3)
+                Y_smooth = spl(X_smooth)
+                
+                # Plot smooth line with points
+                plt.plot(X_smooth, Y_smooth, color=color, alpha=0.8, label=label)
+                plt.scatter(episodes, values, color=color, alpha=0.4, s=30)
+            
+            plt.title('Q-Learning Agent Training Progress', fontsize=14, pad=20)
+            plt.xlabel('Training Episodes', fontsize=12)
+            plt.ylabel('Rate', fontsize=12)
+            
+            # Customize grid
+            plt.grid(True, linestyle='--', alpha=0.7)
+            
+            # Customize legend
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            
+            # Add some padding to the layout
+            plt.tight_layout()
+            
+            # Save with high DPI
+            plt.savefig(get_plot_path("q_learning"), dpi=300, bbox_inches='tight')
             plt.show()
             
-        except ImportError:
-            print("Matplotlib not available. Install it to visualize training progress.")
+        except ImportError as e:
+            print(f"Required plotting libraries not available: {e}")
+            print("Install matplotlib and scipy for visualization.")
