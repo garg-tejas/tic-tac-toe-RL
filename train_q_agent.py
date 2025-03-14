@@ -16,16 +16,17 @@ def main():
     agent.initialize_with_heuristics()
     
     # Train with curriculum learning
-    agent.train_curriculum(episodes=20000)  # Train with more episodes
+    agent.train_curriculum(episodes=50000)  # Train with more episodes
     
     # Save trained model
     agent.save_q_table()
     
-    # Show training stats
+    # Plot training progress
     try:
+        print("Generating training progress visualization...")
         agent.plot_training_progress()
-    except:
-        print("Could not plot training progress")
+    except Exception as e:
+        print(f"Could not plot training progress: {e}")
     
     elapsed_time = time.time() - start_time
     print(f"Training complete in {elapsed_time:.2f} seconds!")

@@ -173,7 +173,7 @@ class QLearningTicTacToe:
             game_history = []
             
             # Adaptive epsilon decay based on win rate
-            if episode % window_size == 0 and episode > 0:
+            if (episode + 1) % window_size == 0 and episode > 0:
                 win_rate = wins / window_size
                 self.training_stats['wins'].append(win_rate)
                 loss_rate = losses / window_size
@@ -182,7 +182,7 @@ class QLearningTicTacToe:
                 self.training_stats['draws'].append(draw_rate)
                             
                 # Print current stats
-                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
                 
                 # Adjust epsilon based on performance
                 if win_rate > 0.6:
@@ -309,7 +309,7 @@ class QLearningTicTacToe:
             if episode % 10 == 0:
                 self.learn_from_replay_buffer()
 
-            if episode % stats_window == 0 and episode > 0:
+            if (episode + 1) % stats_window == 0 and episode > 0:
                 win_rate = wins / stats_window
                 loss_rate = losses / stats_window
                 draw_rate = draws / stats_window
@@ -320,7 +320,7 @@ class QLearningTicTacToe:
                 self.training_stats['draws'].append(draw_rate)
                             
                 # Print current stats
-                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
@@ -388,7 +388,7 @@ class QLearningTicTacToe:
             if episode % 10 == 0:
                 self.learn_from_replay_buffer()
 
-            if episode % stats_window == 0 and episode > 0:
+            if (episode + 1) % stats_window == 0 and episode > 0:
                 win_rate = wins / stats_window
                 loss_rate = losses / stats_window
                 draw_rate = draws / stats_window
@@ -399,7 +399,7 @@ class QLearningTicTacToe:
                 self.training_stats['draws'].append(draw_rate)
                             
                 # Print current stats
-                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
@@ -496,15 +496,15 @@ class QLearningTicTacToe:
         self.train_against_random(total_episodes // 4)
         
         # Second stage: train against minimax with limited depth
-        print("\nStage 2: Training against easy minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=2)
+        print("Stage 2: Training against easy minimax...")
+        self.train_against_minimax(total_episodes // 4, depth_limit=1)
         
         # Third stage: train against harder minimax
-        print("\nStage 3: Training against harder minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=4)
+        print("Stage 3: Training against harder minimax...")
+        self.train_against_minimax(total_episodes // 4, depth_limit=3)
         
         # Fourth stage: full self-play
-        print("\nStage 4: Training with full self-play...")
+        print("Stage 4: Training with full self-play...")
         self.train(total_episodes // 4, use_replay=True, use_ucb=True)
         
         print("Curriculum training complete!")
@@ -617,57 +617,83 @@ class QLearningTicTacToe:
                 print("-" * 11)
 
     def plot_training_progress(self):
-        """Plot training progress over time with improved visualization."""
+        """Plot training progress over time with Seaborn visualization."""
         try:
             import matplotlib.pyplot as plt
             import numpy as np
-            from scipy.interpolate import make_interp_spline
+            import pandas as pd
+            import seaborn as sns
             
             if not self.training_stats['wins']:
                 print("No training statistics available.")
                 return
             
-            # Create figure with larger size and better resolution
-            plt.figure(figsize=(12, 7), dpi=100)
+            # Set seaborn style and context
+            sns.set_theme(style="darkgrid")
+            sns.set_context("notebook", font_scale=1.2)
             
-            # Get episodes array
-            episodes = np.array(range(len(self.training_stats['wins']))) * 1000  # Actual episode numbers
+            # Create a pandas DataFrame from training stats
+            episodes = np.array(range(len(self.training_stats['wins']))) * 1000
+            df = pd.DataFrame({
+                'Episode': episodes,
+                'Win Rate': self.training_stats['wins'],
+                'Loss Rate': self.training_stats['losses'],
+                'Draw Rate': self.training_stats['draws']
+            })
             
-            # Plot each metric with interpolated smooth lines
-            metrics = ['wins', 'losses', 'draws']
-            colors = ['green', 'red', 'blue']
-            labels = ['Wins', 'Losses', 'Draws']
+            # Create figure with larger size
+            plt.figure(figsize=(12, 7))
             
-            for metric, color, label in zip(metrics, colors, labels):
-                # Convert to numpy array
-                values = np.array(self.training_stats[metric])
+            # Plot with seaborn
+            ax = plt.gca()
+            
+            # Plot each metric separately
+            sns.lineplot(x='Episode', y='Win Rate', data=df,
+                         label='Wins', color='green', ax=ax)
+            sns.lineplot(x='Episode', y='Loss Rate', data=df,
+                         label='Losses', color='red', ax=ax)
+            sns.lineplot(x='Episode', y='Draw Rate', data=df, 
+                         label='Draws', color='blue', ax=ax)
+            
+            # Enhance the plot
+            plt.title('Q-Learning Agent Training Progress', fontsize=16, pad=20)
+            plt.xlabel('Training Episodes', fontsize=14)
+            plt.ylabel('Rate', fontsize=14)
+            
+            # Improve legend
+            plt.legend(title='Metrics', title_fontsize=13, fontsize=12, 
+                     frameon=True, facecolor='white', edgecolor='gray')
+            
+            # Add annotations for the final rates
+            if len(episodes) > 0:
+                latest_win = df['Win Rate'].iloc[-1]
+                latest_loss = df['Loss Rate'].iloc[-1]
+                latest_draw = df['Draw Rate'].iloc[-1]
                 
-                # Create smooth line
-                X_smooth = np.linspace(episodes.min(), episodes.max(), 300)
-                spl = make_interp_spline(episodes, values, k=3)
-                Y_smooth = spl(X_smooth)
-                
-                # Plot smooth line with points
-                plt.plot(X_smooth, Y_smooth, color=color, alpha=0.8, label=label)
-                plt.scatter(episodes, values, color=color, alpha=0.4, s=30)
-            
-            plt.title('Q-Learning Agent Training Progress', fontsize=14, pad=20)
-            plt.xlabel('Training Episodes', fontsize=12)
-            plt.ylabel('Rate', fontsize=12)
-            
-            # Customize grid
-            plt.grid(True, linestyle='--', alpha=0.7)
-            
-            # Customize legend
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+                plt.annotate(f"Final Win Rate: {latest_win:.2f}", 
+                           xy=(episodes[-1], latest_win),
+                           xytext=(10, 10), textcoords='offset points',
+                           fontsize=11, color='green')
+                           
+                plt.annotate(f"Final Loss Rate: {latest_loss:.2f}", 
+                           xy=(episodes[-1], latest_loss),
+                           xytext=(10, -15), textcoords='offset points', 
+                           fontsize=11, color='red')
+                           
+                plt.annotate(f"Final Draw Rate: {latest_draw:.2f}", 
+                           xy=(episodes[-1], latest_draw),
+                           xytext=(10, -40), textcoords='offset points',
+                           fontsize=11, color='blue')
             
             # Add some padding to the layout
             plt.tight_layout()
             
             # Save with high DPI
-            plt.savefig(get_plot_path("q_learning"), dpi=300, bbox_inches='tight')
+            plot_path = get_plot_path("q_learning")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"Training plot saved to {plot_path}")
             plt.show()
             
         except ImportError as e:
             print(f"Required plotting libraries not available: {e}")
-            print("Install matplotlib and scipy for visualization.")
+            print("Install matplotlib, pandas, and seaborn for visualization.")
