@@ -7,7 +7,7 @@ A Python-based Tic-Tac-Toe game featuring multiple AI implementations including:
 - Minimax Algorithm with Alpha-Beta Pruning
 - Q-Learning with Experience Replay
 - Deep Q-Network (DQN) with Curriculum Learning
-- Monte Carlo Tree Search (Coming Soon)
+- Monte Carlo Tree Search (MCTS) with RAVE and Virtual Loss
 
 The game provides a graphical user interface built with Pygame, allowing players to compete against different AI opponents or play against another human player.
 
@@ -70,19 +70,21 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 ```plaintext
 ttt-gpt/
-├── main.py              # Main entry point
-├── gui.py              # GUI implementation using Pygame
-├── game.py             # Core game logic
-├── minimax_ai.py       # Minimax algorithm implementation
-├── q_learning_ai.py    # Q-Learning implementation
-├── dqn_ai.py          # Deep Q-Network implementation
-├── mcts_ai.py         # Monte Carlo Tree Search (Coming Soon)
-├── train_dqn.py       # DQN training script
-├── train_q_agent.py   # Q-Learning training script
-├── requirements.txt    # Python dependencies
-└── models/            # Pre-trained model files
-    ├── dqn_ttt.pth    # Trained DQN weights
-    └── q_table.pkl    # Q-Learning table
+├── main.py                      # Main entry point
+├── gui.py                       # GUI implementation using Pygame
+├── game.py                      # Core game logic
+├── minimax_ai.py                # Minimax algorithm implementation
+├── q_learning_ai.py             # Q-Learning implementation
+├── dqn_ai.py                    # Deep Q-Network implementation
+├── mcts_ai.py                   # Monte Carlo Tree Search implementation
+├── train_mcts.py                # MCTS training script
+├── train_dqn.py                 # DQN training script
+├── train_q_agent.py             # Q-Learning training script
+├── requirements.txt             # Python dependencies
+└── models/                      # Pre-trained model files
+    ├── DQN/model.pth            # Trained DQN Model
+    ├── MCTS/model.pkl           # Trained MCTS Model
+    └── Q_Learning/model.pkl     # Trained Q-Learning Model
 ```
 
 ## Implementation Details
@@ -119,6 +121,15 @@ ttt-gpt/
 - Separate target network for stability
 - Epsilon-greedy exploration strategy
 - Curriculum learning implementation
+
+#### 4. Monte Carlo Tree Search (MCTS)
+
+- UCB1 formula for exploration/exploitation balance
+- Rapid Action Value Estimation (RAVE) for improved learning
+- Virtual loss for search parallelization
+- Transposition table for state caching
+- Node recycling for memory efficiency
+- Curriculum learning training approach
 
 ## Usage
 
@@ -158,14 +169,21 @@ python train_q_agent.py
 python train_dqn.py
 ```
 
+3. Train the MCTS agent:
+
+```bash
+python train_mcts.py
+```
+
 Training progress and statistics will be saved automatically.
 
 ### Pre-trained Models
 
 The repository includes pre-trained models:
 
-- `models/q_table.pkl`: Pre-trained Q-Learning model
-- `models/dqn_ttt.pth`: Pre-trained DQN model
+- `models/q_learning/model.pkl`: Pre-trained Q-Learning model
+- `models/dqn/model.pth`: Pre-trained DQN model
+- `models/mcts/model.pkl`: Pre-trained MCTS model
 
 These will be loaded automatically when starting the game.
 
@@ -208,6 +226,17 @@ agent = QLearningTicTacToe(
 )
 ```
 
+#### MCTS Parameters
+
+```python
+# Customize MCTS parameters in train_mcts.py
+agent = MCTSAI(
+    exploration_weight=1.41,  # UCB exploration parameter
+    time_limit=0.5,          # Search time per move (seconds)
+    temperature=0.1          # Temperature for move selection
+)
+```
+
 ### Custom Training Settings
 
 #### Curriculum Learning
@@ -240,6 +269,7 @@ REPLAY_FREQUENCY = 10  # Learn from replay every 10 episodes
 mkdir models  # Create models directory if missing
 python train_q_agent.py  # Train new Q-learning model
 python train_dqn.py     # Train new DQN model
+python train_mcts.py    #Train new MCTS model
 ```
 
 #### GPU/CUDA Issues
@@ -311,7 +341,7 @@ agent.evaluate_agent(num_games=1000, opponent_type="minimax")
 ### Planned Features
 
 - 🎮 Additional game modes (Championship, Tournament)
-- 🤖 More AI implementations (MCTS, Neural Networks)
+- 🤖 More AI implementations (Alpha-Zero, TD Learning)
 - 📊 Interactive training visualization
 - 🎯 Difficulty levels for each AI
 - 🔄 Real-time learning during gameplay
