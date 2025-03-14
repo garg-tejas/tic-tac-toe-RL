@@ -8,18 +8,21 @@ import os
 from utils import get_model_path, get_plot_path
 
 class DQN(nn.Module):
-    def __init__(self, input_size=9, hidden_size=64, output_size=9):
+    def __init__(self, input_size=12, hidden_size=128, output_size=9):
         super(DQN, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, output_size)
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, output_size)
         )
     
     def forward(self, x):
         return self.model(x)
+
 
 class DQNTicTacToe:
     def __init__(self, alpha=0.001, gamma=0.9, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, buffer_size=10000, batch_size=32):
@@ -30,6 +33,7 @@ class DQNTicTacToe:
         self.target_net.eval()
         
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=alpha)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=5000, gamma=0.5)
         self.loss_fn = nn.MSELoss()
         self.gamma = gamma
         self.epsilon = epsilon
@@ -48,22 +52,35 @@ class DQNTicTacToe:
         self.opponent = 'X' if player == 'O' else 'O'
         
     def get_state(self, board):
-        """Convert board to tensor representation for neural network from player perspective."""
-        # Get canonical (symmetric) state first
+        """Enhanced state representation with more features."""
         if isinstance(board[0], list):
             # Convert 2D board to 1D for canonicalization
             board_1d = [" " if cell is None else cell for row in board for cell in row]
             canonical_board = self.get_canonical_state(board_1d)
         else:
             canonical_board = self.get_canonical_state(board)
-            
-        # Convert to tensor representation
-        # Represent from the player's perspective: player is always 1, opponent is -1
-        return torch.tensor([
+        
+        # Basic board state
+        basic_state = [
             1.0 if cell == self.player else 
-        -1.0 if cell != " " else 
+            -1.0 if cell != " " else 
             0.0 for cell in canonical_board
-        ], dtype=torch.float32, device=self.device).unsqueeze(0)
+        ]
+        
+        # Add feature: player's two-in-a-rows
+        player_two_in_rows = self.count_two_in_a_row(canonical_board, self.player)
+        
+        # Add feature: opponent's two-in-a-rows
+        opponent = 'X' if self.player == 'O' else 'O'
+        opponent_two_in_rows = self.count_two_in_a_row(canonical_board, opponent)
+        
+        # Add feature: center control
+        center_control = 1.0 if canonical_board[4] == self.player else -1.0 if canonical_board[4] == opponent else 0.0
+        
+        # Combine all features
+        enhanced_state = basic_state + [player_two_in_rows/3.0, opponent_two_in_rows/3.0, center_control]
+        
+        return torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).unsqueeze(0)
     
     def get_canonical_state(self, board):
         """Convert board to canonical form using board symmetry."""
@@ -109,7 +126,15 @@ class DQNTicTacToe:
     
     def store_experience(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
-    
+
+    def soft_update_target_network(self, tau=0.01):
+        """Soft update target network: θ_target = τ*θ_policy + (1-τ)*θ_target"""
+        for target_param, policy_param in zip(self.target_net.parameters(), 
+                                            self.policy_net.parameters()):
+            target_param.data.copy_(
+                tau * policy_param.data + (1.0 - tau) * target_param.data
+            )
+
     def train_step(self):
         if len(self.memory) < self.batch_size:
             return
@@ -125,17 +150,28 @@ class DQNTicTacToe:
         rewards = torch.tensor(rewards, device=self.device, dtype=torch.float32)
         dones = torch.tensor(dones, device=self.device, dtype=torch.bool)
         
-        # Get Q-values for actions taken
+        # Current Q Values
         q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze()
         
-        # Get max Q-values for next states
-        next_q_values = self.target_net(next_states).max(1)[0].detach()
-        target_q_values = rewards + (self.gamma * next_q_values * ~dones)
+        # Double DQN Implementation:
+        # 1. Select actions using policy network
+        # 2. Evaluate those actions using target network
+        with torch.no_grad():
+            next_actions = self.policy_net(next_states).max(1)[1].unsqueeze(1)
+            next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze()
+            target_q_values = rewards + (self.gamma * next_q_values * ~dones)
         
         loss = self.loss_fn(q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient clipping to avoid exploding gradients
+        torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+        
         self.optimizer.step()
+        
+        # Return loss value for monitoring
+        return loss.item()
     
     def update_target_network(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -169,11 +205,11 @@ class DQNTicTacToe:
                     self.train_step()
                     state = next_state
             
-            if episode % target_update == 0:
-                self.update_target_network()
+            self.soft_update_target_network(tau=0.01)  # Apply soft update every episode
+            self.scheduler.step()
 
             # Calculate and report statistics every 1000 episodes
-            if episode % stats_window == 0 and episode > 0:
+            if (episode + 1) % stats_window == 0 and episode > 0:
                 win_rate = wins / stats_window
                 loss_rate = losses / stats_window
                 draw_rate = draws / stats_window
@@ -184,7 +220,7 @@ class DQNTicTacToe:
                 self.training_stats['draws'].append(draw_rate)
                             
                 # Print current stats
-                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
@@ -302,25 +338,26 @@ class DQNTicTacToe:
         col = action % 3
         
         return row, col
-            
+
     def train_curriculum(self, episodes=50000):
-        """Train using curriculum learning - increasing difficulty."""
+        """Enhanced curriculum learning for DQN."""
         total_episodes = episodes
-        # First stage: train against random opponent
+        
+        # Start with more random opponent training
         print("Stage 1: Training against random opponent...")
-        self.train_against_random(total_episodes // 4)
+        self.train_against_random(int(total_episodes * 0.35))  # 35% random training
         
-        # Second stage: train against minimax with limited depth
+        # Brief exposure to easy minimax
         print("Stage 2: Training against easy minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=2)
+        self.train_against_minimax(int(total_episodes * 0.15), depth_limit=1)  # 15% easy minimax
         
-        # Third stage: train against harder minimax
+        # More extensive training against medium minimax
         print("Stage 3: Training against harder minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=4)
+        self.train_against_minimax(int(total_episodes * 0.25), depth_limit=3)  # 25% medium minimax
         
-        # Fourth stage: full self-play with DQN
+        # Finally self-play to refine strategy
         print("Stage 4: Training with full self-play...")
-        self.train(total_episodes // 4)
+        self.train(int(total_episodes * 0.25))  # 25% self-play
         
         print("Curriculum training complete!")
 
@@ -376,12 +413,13 @@ class DQNTicTacToe:
                 self.train_step()
                 state = next_state
             
+            self.soft_update_target_network(tau=0.01)  # Apply soft update every episode
+
             if episode % 100 == 0:
-                self.update_target_network()
                 self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
             # Calculate and report statistics every 1000 episodes
-            if episode % stats_window == 0 and episode > 0:
+            if (episode + 1) % stats_window == 0 and episode > 0:
                 win_rate = wins / stats_window
                 loss_rate = losses / stats_window
                 draw_rate = draws / stats_window
@@ -392,7 +430,7 @@ class DQNTicTacToe:
                 self.training_stats['draws'].append(draw_rate)
                             
                 # Print current stats
-                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
@@ -477,12 +515,13 @@ class DQNTicTacToe:
                 self.train_step()
                 state = next_state
             
+            self.soft_update_target_network(tau=0.01)  # Apply soft update every episode
+
             if episode % 100 == 0:
-                self.update_target_network()
                 self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
             
             # Calculate and report statistics every 1000 episodes
-            if episode % stats_window == 0 and episode > 0:
+            if (episode + 1) % stats_window == 0 and episode > 0:
                 win_rate = wins / stats_window
                 loss_rate = losses / stats_window
                 draw_rate = draws / stats_window
@@ -493,55 +532,79 @@ class DQNTicTacToe:
                 self.training_stats['draws'].append(draw_rate)
                             
                 # Print current stats
-                print(f"Episode: {episode}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
+                print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}, Epsilon: {self.epsilon:.3f}")
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
 
     def plot_training_progress(self):
-        """Plot training progress over time with improved visualization."""
+        """Plot training progress over time with Seaborn visualization."""
         try:
             import matplotlib.pyplot as plt
             import numpy as np
-            from scipy.interpolate import make_interp_spline
+            import pandas as pd
+            import seaborn as sns
             
             if not self.training_stats['wins']:
                 print("No training statistics available.")
                 return
             
-            # Create figure with larger size and better resolution
-            plt.figure(figsize=(12, 7), dpi=100)
+            # Set seaborn style and context
+            sns.set_theme(style="darkgrid")
+            sns.set_context("notebook", font_scale=1.2)
             
-            # Get episodes array
-            episodes = np.array(range(len(self.training_stats['wins']))) * 1000  # Actual episode numbers
+            # Create a pandas DataFrame from training stats
+            episodes = np.array(range(len(self.training_stats['wins']))) * 1000
+            df = pd.DataFrame({
+                'Episode': episodes,
+                'Win Rate': self.training_stats['wins'],
+                'Loss Rate': self.training_stats['losses'],
+                'Draw Rate': self.training_stats['draws']
+            })
             
-            # Plot each metric with interpolated smooth lines
-            metrics = ['wins', 'losses', 'draws']
-            colors = ['green', 'red', 'blue']
-            labels = ['Wins', 'Losses', 'Draws']
+            # Create figure with larger size
+            plt.figure(figsize=(12, 7))
             
-            for metric, color, label in zip(metrics, colors, labels):
-                # Convert to numpy array
-                values = np.array(self.training_stats[metric])
+            # Plot with seaborn
+            ax = plt.gca()
+            
+            # Plot each metric separately
+            sns.lineplot(x='Episode', y='Win Rate', data=df,
+                         label='Wins', color='green', ax=ax)
+            sns.lineplot(x='Episode', y='Loss Rate', data=df,
+                         label='Losses', color='red', ax=ax)
+            sns.lineplot(x='Episode', y='Draw Rate', data=df, 
+                         label='Draws', color='blue', ax=ax)
+            
+            # Enhance the plot
+            plt.title('DQN Agent Learning Progress', fontsize=16, pad=20)
+            plt.xlabel('Training Episodes', fontsize=14)
+            plt.ylabel('Rate', fontsize=14)
+            
+            # Improve legend
+            plt.legend(title='Metrics', title_fontsize=13, fontsize=12, 
+                    frameon=True, facecolor='white', edgecolor='gray')
+            
+            # Add annotations for the final rates
+            if len(episodes) > 0:
+                latest_win = df['Win Rate'].iloc[-1]
+                latest_loss = df['Loss Rate'].iloc[-1]
+                latest_draw = df['Draw Rate'].iloc[-1]
                 
-                # Create smooth line
-                X_smooth = np.linspace(episodes.min(), episodes.max(), 300)
-                spl = make_interp_spline(episodes, values, k=3)
-                Y_smooth = spl(X_smooth)
-                
-                # Plot smooth line with points
-                plt.plot(X_smooth, Y_smooth, color=color, alpha=0.8, label=label)
-                plt.scatter(episodes, values, color=color, alpha=0.4, s=30)
-            
-            plt.title('DQN Agent Learning Progress', fontsize=14, pad=20)
-            plt.xlabel('Training Episodes', fontsize=12)
-            plt.ylabel('Rate', fontsize=12)
-            
-            # Customize grid
-            plt.grid(True, linestyle='--', alpha=0.7)
-            
-            # Customize legend
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+                plt.annotate(f"Final Win Rate: {latest_win:.2f}", 
+                        xy=(episodes[-1], latest_win),
+                        xytext=(10, 10), textcoords='offset points',
+                        fontsize=11, color='green')
+                        
+                plt.annotate(f"Final Loss Rate: {latest_loss:.2f}", 
+                        xy=(episodes[-1], latest_loss),
+                        xytext=(10, -15), textcoords='offset points', 
+                        fontsize=11, color='red')
+                        
+                plt.annotate(f"Final Draw Rate: {latest_draw:.2f}", 
+                        xy=(episodes[-1], latest_draw),
+                        xytext=(10, -40), textcoords='offset points',
+                        fontsize=11, color='blue')
             
             # Add some padding to the layout
             plt.tight_layout()
@@ -552,4 +615,4 @@ class DQNTicTacToe:
             
         except ImportError as e:
             print(f"Required plotting libraries not available: {e}")
-            print("Install matplotlib and scipy for visualization.")
+            print("Install matplotlib, pandas, and seaborn for visualization.")

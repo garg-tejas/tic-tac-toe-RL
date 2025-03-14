@@ -21,7 +21,7 @@ def main():
     
     # Train with curriculum learning
     print("Starting curriculum training...")
-    agent.train_curriculum(episodes=20000)  # Train with more episodes
+    agent.train_curriculum(episodes=50000)  # Train with more episodes
     
     # Save trained model
     save_path = get_model_path("dqn")
