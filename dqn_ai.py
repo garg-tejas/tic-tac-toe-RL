@@ -633,22 +633,18 @@ class DQNTicTacToe:
         # Stage 1: Expert pre-training
         print("Stage 1: Pre-training on expert moves...")
         self.pretrain_on_expert_moves(num_examples=5000, epochs=5)
-        self.save_model("dqn_stage1.pth")  # Save after each stage
         
         # Stage 2: Training against random
         print("Stage 2: Training against random opponent...")
         self.train_against_random(int(episodes * 0.35))
-        self.save_model("dqn_stage2.pth")
         
         # Stage 3: Training against easy minimax
         print("Stage 3: Training against easy minimax...")
         self.train_against_minimax(int(episodes * 0.15), depth_limit=1)
-        self.save_model("dqn_stage3.pth")
         
         # Stage 4: Training against harder minimax
         print("Stage 4: Training against harder minimax...")
         self.train_against_minimax(int(episodes * 0.25), depth_limit=3)
-        self.save_model("dqn_stage4.pth")
         
         # Stage 5: Self-play
         print("Stage 5: Training with full self-play...")
