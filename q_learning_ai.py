@@ -21,21 +21,15 @@ class QLearningTicTacToe:
         self.training_stats = {'wins': [], 'losses': [], 'draws': []}  # For monitoring progress
         self.minimax_ai = MinimaxAI() # Initialize minimax AI for training
         
-        # Try to load existing Q-tables or train new ones
-        self.load_q_table()
-        if not self.q_table or not self.opponent_q_table:
-            print("Pre-training Q-learning agent...")
-            self.initialize_with_heuristics()  # Initialize with heuristics first
-            self.train_curriculum(5000)  # Train with curriculum learning
-            self.save_q_table()
-            print("Training complete!")
-            
-        # With this:
+        # Try to load existing Q-tables
         success = self.load_q_table()
         if not success:
-            print("No pre-trained Q-table found. Using empty table.")
-            # Initialize with basic values but DON'T train
+            print("No pre-trained Q-table found. Initializing with heuristics.")
             self.initialize_with_heuristics()
+
+    def is_terminal(self, board):
+        """Check if the game has reached a terminal state."""
+        return self.check_winner(board) is not None or " " not in board
 
     def convert_2d_to_1d(self, board_2d):
         """Convert 2D board to 1D format for Q-learning."""
@@ -72,37 +66,70 @@ class QLearningTicTacToe:
         """Return a list of valid move indices."""
         return [i for i in range(9) if board[i] == " "]
 
-    def choose_action(self, board, q_table, game_mode=False, use_ucb=False):
-        """Choose action using epsilon-greedy strategy."""
+    def choose_action(self, board, q_table=None, epsilon=None, use_ucb=False, game_mode=False):
+        """Choose action using epsilon-greedy or UCB policy."""
+        # Use appropriate q_table
+        if q_table is None:
+            q_table = self.q_table
+            
+        # Use UCB if specified
         if use_ucb:
-            return self.choose_action_ucb(board, q_table)
-        
-        state = self.get_state(board)
+            return self.choose_action_ucb(board, q_table, game_mode=game_mode)
+            
+        # Epsilon-greedy implementation
+        if epsilon is None:
+            epsilon = self.epsilon
+            
         valid_moves = self.get_valid_moves(board)
-        
         if not valid_moves:
             return None
-        
-        # Use lower epsilon during actual gameplay for less randomness
-        explore_rate = 0.05 if game_mode else self.epsilon
-        
-        if random.uniform(0, 1) < explore_rate:
-            return random.choice(valid_moves)  # Explore
-        
-        # Exploit: Choose best known action
-        q_values = [q_table.get((state, move), 0) for move in valid_moves]
-        max_q = max(q_values)
-        best_moves = [valid_moves[i] for i, q in enumerate(q_values) if q == max_q]
-        return random.choice(best_moves)
+            
+        # Use lower epsilon in game mode
+        explore_rate = 0.01 if game_mode else epsilon
+            
+        # Exploration: random move
+        if random.random() < explore_rate:
+            return random.choice(valid_moves)
+            
+        # Exploitation: use Q-table
+        state_key = self.get_state_key(board)
+        if state_key in q_table:
+            # Get Q-values for valid moves only
+            valid_q_values = [(q_table[state_key][move], move) for move in valid_moves]
+            return max(valid_q_values, key=lambda x: x[0])[1]
+        else:
+            # If state not in Q-table, use expert knowledge or random
+            best_move = self.get_expert_move(board, self.player)
+            if best_move is not None and best_move in valid_moves:
+                return best_move
+            return random.choice(valid_moves)
 
     def update_q_value(self, state, action, reward, next_state, q_table):
         """Update Q-table using Q-learning formula with adaptive learning rate."""
         # Use adaptive learning rate
         alpha = self.adaptive_alpha(state, action)
         
-        max_future_q = max([q_table.get((next_state, a), 0) for a in self.get_valid_moves(list(next_state))], default=0)
-        current_q = q_table.get((state, action), 0)
-        q_table[(state, action)] = current_q + alpha * (reward + self.gamma * max_future_q - current_q)
+        # Make sure state_key is a consistent format
+        state_key = self.get_state_key(state) if not isinstance(state, str) else state
+        next_state_key = self.get_state_key(next_state) if not isinstance(next_state, str) else next_state
+        
+        # Initialize state in q_table if not present
+        if state_key not in q_table:
+            q_table[state_key] = [0.0] * 9
+        
+        # Get valid moves in next state
+        next_board = list(next_state_key) if isinstance(next_state_key, tuple) else next_state_key
+        valid_moves = self.get_valid_moves(next_board)
+        
+        # Calculate max future Q-value
+        max_future_q = 0
+        if valid_moves:
+            if next_state_key in q_table:
+                max_future_q = max([q_table[next_state_key][a] for a in valid_moves])
+        
+        # Update Q-value
+        current_q = q_table[state_key][action]
+        q_table[state_key][action] = current_q + alpha * (reward + self.gamma * max_future_q - current_q)
     
     def count_two_in_a_row(self, board, player):
         """Count how many two-in-a-row positions player has with an empty third position."""
@@ -154,6 +181,161 @@ class QLearningTicTacToe:
                 return board[combo[0]]
         if " " not in board:
             return "draw"
+        return None
+    
+    def pretrain_on_expert_moves(self, num_examples=10000):
+        """Pre-train the Q-table with expert Tic-Tac-Toe moves."""
+        print("Pre-training Q-learning with expert moves...")
+        
+        # Track stats
+        examples_created = 0
+        
+        # Generate expert data
+        for _ in range(num_examples):
+            # Create a random board with 1-5 moves already played
+            board = [" "] * 9
+            moves_made = random.randint(1, 5)
+            current_player = 'X'  # Start with X
+            
+            # Make random moves to reach a mid-game position
+            for _ in range(moves_made):
+                valid_moves = self.get_valid_moves(board)
+                if not valid_moves:
+                    break
+                move = random.choice(valid_moves)
+                board[move] = current_player
+                current_player = 'O' if current_player == 'X' else 'X'
+                
+                # Stop if game is over
+                if self.is_terminal(board):
+                    break
+            
+            # If game is already over, skip this example
+            if self.is_terminal(board):
+                continue
+                
+            # Now find the "expert move" for this position
+            state_key = self.get_state_key(board)
+            best_move = self.get_expert_move(board, current_player)
+            
+            if best_move is not None:
+                # Update Q-table with high value for best move, low for others
+                if state_key not in self.q_table:
+                    self.q_table[state_key] = [0.0] * 9  # Initialize Q-values for all actions
+                    
+                # Assign higher values to expert moves
+                for action in range(9):
+                    if action == best_move:
+                        self.q_table[state_key][action] = 5.0  # High value for best action
+                    elif board[action] != " ":
+                        self.q_table[state_key][action] = -5.0  # Invalid move
+                    else:
+                        self.q_table[state_key][action] = 0.0  # Neutral for other valid moves
+                        
+                examples_created += 1
+        
+        print(f"Generated {examples_created} expert examples for Q-learning")
+
+    def get_state_key(self, board):
+        """Convert board to a hashable key for the Q-table."""
+        # If the board is already in canonical form, just return it as string
+        if isinstance(board, str):
+            return board
+            
+        # Otherwise, convert board to canonical form (handling symmetries)
+        return str(self.get_canonical_state(board))
+        
+    def get_expert_move(self, board, player):
+        """Determine the best move according to expert Tic-Tac-Toe strategy."""
+        # Convert format if needed
+        board_list = board
+        if isinstance(board, str):
+            board_list = list(board)
+        
+        # Priority 1: Win if possible
+        winning_move = self.find_winning_move(board_list, player)
+        if winning_move is not None:
+            return winning_move
+        
+        # Priority 2: Block opponent's win
+        opponent = 'O' if player == 'X' else 'X'
+        blocking_move = self.find_winning_move(board_list, opponent)
+        if blocking_move is not None:
+            return blocking_move
+        
+        # Priority 3: Take center if available
+        if board_list[4] == " ":
+            return 4
+        
+        # Priority 4: Take corner if opponent has center
+        if board_list[4] == opponent:
+            corners = [0, 2, 6, 8]
+            available_corners = [corner for corner in corners if board_list[corner] == " "]
+            if available_corners:
+                return random.choice(available_corners)
+        
+        # Priority 5: Create a fork
+        fork_move = self.find_fork_move(board_list, player)
+        if fork_move is not None:
+            return fork_move
+        
+        # Priority 6: Block opponent's fork
+        opponent_fork = self.find_fork_move(board_list, opponent)
+        if opponent_fork is not None:
+            return opponent_fork
+        
+        # Priority 7: Take any corner
+        corners = [0, 2, 6, 8]
+        available_corners = [corner for corner in corners if board_list[corner] == " "]
+        if available_corners:
+            return random.choice(available_corners)
+        
+        # Priority 8: Take any edge
+        edges = [1, 3, 5, 7]
+        available_edges = [edge for edge in edges if board_list[edge] == " "]
+        if available_edges:
+            return random.choice(available_edges)
+        
+        # If nothing else, take any available move
+        valid_moves = self.get_valid_moves(board_list)
+        if valid_moves:
+            return random.choice(valid_moves)
+        
+        return None
+    
+    def find_winning_move(self, board, player):
+        """Find an immediate winning move if it exists."""
+        for i in range(9):
+            if board[i] == " ":
+                # Try this move
+                board_copy = board.copy()
+                board_copy[i] = player
+                
+                # Check if it's a win
+                if self.check_winner(board_copy) == player:
+                    return i
+        return None
+        
+    def find_fork_move(self, board, player):
+        """Find a move that creates two winning ways (a fork)."""
+        valid_moves = self.get_valid_moves(board)
+        for move in valid_moves:
+            # Try this move
+            board_copy = board.copy()
+            board_copy[move] = player
+            
+            # Count how many winning ways this creates
+            winning_ways = 0
+            for test_move in self.get_valid_moves(board_copy):
+                test_board = board_copy.copy()
+                test_board[test_move] = player
+                if self.check_winner(test_board) == player:
+                    winning_ways += 1
+            
+            # If it creates 2+ winning ways, it's a fork
+            if winning_ways >= 2:
+                return move
+        
         return None
     
     def train(self, episodes=10000, use_replay=True, use_ucb=True, checkpointing=True, 
@@ -286,7 +468,7 @@ class QLearningTicTacToe:
                 
                 # Only store AI's moves for learning
                 if current_player == "O":
-                    game_history.append((state, action, reward, next_state, done))
+                    game_history.append((state, action, reward, next_state, done, "O"))
                 
                 # Check if game is over and track result
                 if done:
@@ -366,7 +548,7 @@ class QLearningTicTacToe:
                 
                 # Only store AI's moves for learning
                 if current_player == "O":
-                    game_history.append((state, action, reward, next_state, reward != 0 or " " not in board))
+                    game_history.append((state, action, reward, next_state, done, "O"))
                 
                 if reward != 0 or " " not in board:
                     winner = self.check_winner(board)
@@ -406,8 +588,7 @@ class QLearningTicTacToe:
 
     def play_move(self, board):
         """Make a move during an actual game."""
-        action = self.choose_action(board, self.q_table, game_mode=True, use_ucb=False)
-        return action
+        return self.choose_action(board, q_table=self.q_table, game_mode=True, use_ucb=False)
     
     def best_move(self, board_2d):
         """Return the best move as (row, col) coordinates."""
@@ -489,23 +670,23 @@ class QLearningTicTacToe:
         return max(0.01, self.initial_alpha / (1 + 0.1 * self.visit_counts[key]))
 
     def train_curriculum(self, episodes=50000):
-        """Train using curriculum learning - increasing difficulty."""
+        """Enhanced curriculum learning for Q-learning with expert pre-training."""
+        # Start with expert pre-training
+        print("Starting pre-training with expert moves...")
+        self.pretrain_on_expert_moves(num_examples=5000)
+        
         total_episodes = episodes
-        # First stage: train against random opponent
         print("Stage 1: Training against random opponent...")
-        self.train_against_random(total_episodes // 4)
+        self.train_against_random(int(total_episodes * 0.35))
         
-        # Second stage: train against minimax with limited depth
         print("Stage 2: Training against easy minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=1)
+        self.train_against_minimax(int(total_episodes * 0.15), depth_limit=1)
         
-        # Third stage: train against harder minimax
         print("Stage 3: Training against harder minimax...")
-        self.train_against_minimax(total_episodes // 4, depth_limit=3)
+        self.train_against_minimax(int(total_episodes * 0.25), depth_limit=3)
         
-        # Fourth stage: full self-play
         print("Stage 4: Training with full self-play...")
-        self.train(total_episodes // 4, use_replay=True, use_ucb=True)
+        self.train(int(total_episodes * 0.25))
         
         print("Curriculum training complete!")
 
@@ -516,7 +697,9 @@ class QLearningTicTacToe:
         empty_board = tuple([" "] * 9)
         
         # Prefer center
-        self.q_table[(empty_board, 4)] = 0.3
+        if empty_board not in self.q_table:
+            self.q_table[empty_board] = [0.0] * 9
+        self.q_table[empty_board][4] = 0.3
         
         # Then corners
         for corner in [0, 2, 6, 8]:
@@ -583,7 +766,7 @@ class QLearningTicTacToe:
         for move in valid_moves:
             q_value = q_table.get((state, move), 0)
             visit_count = self.visit_counts.get((state, move), 0) + 1
-            exploration = 2.0 * math.sqrt(math.log(total_visits + 1) / visit_count)
+            exploration = 1.0 * math.sqrt(math.log(total_visits + 1) / visit_count)
             ucb_values.append(q_value + exploration)
         
         best_move = valid_moves[ucb_values.index(max(ucb_values))]
@@ -592,11 +775,13 @@ class QLearningTicTacToe:
     def visualize_q_values(self, board):
         """Visualize Q-values for current board state."""
         state = self.get_state(board)
+        state_key = self.get_state_key(state) if isinstance(state, tuple) else self.get_state_key(board)
         results = []
         
         for i in range(9):
             if board[i] == " ":
-                q_value = self.q_table.get((state, i), 0)
+                # FIX: Access q_value correctly given the q_table structure
+                q_value = self.q_table.get(state_key, [0]*9)[i] if state_key in self.q_table else 0
                 results.append((i, q_value))
             else:
                 results.append((i, None))
