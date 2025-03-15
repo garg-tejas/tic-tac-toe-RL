@@ -5,7 +5,34 @@ import time
 import os
 import pickle
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from utils import get_model_path, get_plot_path
+
+
+class PolicyNetwork(nn.Module):
+    """Neural network for move prediction and position evaluation."""
+    
+    def __init__(self):
+        super(PolicyNetwork, self).__init__()
+        # Input: 3 channels (player pieces, opponent pieces, empty spaces)
+        # for 3x3 board
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.fc1 = nn.Linear(64 * 3 * 3, 128)
+        self.policy_head = nn.Linear(128, 9)  # 9 possible moves
+        self.value_head = nn.Linear(128, 1)   # Board evaluation
+        
+    def forward(self, x):
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = x.view(-1, 64 * 3 * 3)
+        x = torch.relu(self.fc1(x))
+        policy = torch.softmax(self.policy_head(x), dim=1)
+        value = torch.tanh(self.value_head(x))
+        return policy, value
+    
 
 class MCTSNode:
     """Node in the Monte Carlo search tree representing a game state."""
@@ -105,6 +132,13 @@ class MCTSAI:
         
         # Add training statistics like other implementations
         self.training_stats = {'wins': [], 'losses': [], 'draws': []}
+
+        # Add GPU device detection
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
+
+        # Add neural network for policy and value prediction
+        self.policy_net = PolicyNetwork().to(self.device)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.001)
         
         # Track trained knowledge
         self.position_values = {}  # Store value estimates for positions
@@ -117,7 +151,7 @@ class MCTSAI:
         self.player = player
         
     def best_move(self, board_2d, time_limit=None, temperature=None):
-        """Return the best move within a time limit (seconds)."""
+        """Return the best move within a time limit (seconds) using GPU batch processing."""
         # Use passed parameters or default instance values
         time_limit = time_limit if time_limit is not None else self.time_limit
         temperature = temperature if temperature is not None else self.temperature
@@ -134,37 +168,58 @@ class MCTSAI:
         if len(root.untried_moves) == 1:
             return root.untried_moves[0]
         
+        # For batch processing
+        batch_size = 16  # Adjust based on your GPU memory
+        pending_nodes = []
+        pending_boards = []
+        pending_players = []
+        
         # Use time-based constraint instead of fixed simulation count
         while time.time() - start_time < time_limit:
-            # 1. Selection phase - select a promising leaf node
-            node = self.select_node(root)
-            
-            # 2. Check transposition table for known states
-            if node.board_hash in transpositions:
-                # Get cached information
-                cached_stats = transpositions[node.board_hash]
-                # Update the node with the cached statistics
-                node.visits += cached_stats[0]
-                node.wins += cached_stats[1]
-                continue
-            
-            # 3. Add virtual loss to encourage thread divergence in parallel search
-            node.virtual_loss += 1
-            
-            # 4. Expansion phase - expand if not fully expanded
-            if not node.is_fully_expanded():
-                node = self.expand_node(node)
-            
-            # 5. Simulation phase - play out a random game from this position
-            result, move_history = self.simulate(copy.deepcopy(node.board), node.player)
-            
-            # 6. Backpropagation phase - update statistics up the tree
-            self.backpropagate(node, result, move_history)
-            
-            # 7. Store in transposition table
-            transpositions[node.board_hash] = (node.visits, node.wins)
-            
-            sim_count += 1
+            # Collect nodes for batch processing
+            while len(pending_nodes) < batch_size and time.time() - start_time < time_limit * 0.9:
+                # Selection phase - select a promising leaf node
+                node = self.select_node(root)
+                
+                # Check transposition table for known states
+                if node.board_hash in transpositions:
+                    # Get cached information
+                    cached_stats = transpositions[node.board_hash]
+                    # Update the node with the cached statistics
+                    node.visits += cached_stats[0]
+                    node.wins += cached_stats[1]
+                    continue
+                
+                # Add virtual loss to encourage thread divergence in parallel search
+                node.virtual_loss += 1
+                
+                # Expansion phase - expand if not fully expanded
+                if not node.is_fully_expanded():
+                    node = self.expand_node(node)
+                
+                # Add to pending batch
+                pending_nodes.append(node)
+                pending_boards.append(copy.deepcopy(node.board))
+                pending_players.append(node.player)
+                
+            # Process batch if we have nodes or time is almost up
+            if pending_nodes and (len(pending_nodes) >= batch_size or 
+                                time.time() - start_time >= time_limit * 0.9):
+                # Perform batch simulation
+                results, move_histories = self.batch_simulate(pending_boards, pending_players)
+                
+                # Backpropagate results
+                for node, result, move_history in zip(pending_nodes, results, move_histories):
+                    self.backpropagate(node, result, move_history)
+                    # Store in transposition table
+                    transpositions[node.board_hash] = (node.visits, node.wins)
+                
+                sim_count += len(pending_nodes)
+                
+                # Clear pending lists
+                pending_nodes = []
+                pending_boards = []
+                pending_players = []
         
         # Choose best move based on temperature parameter
         if not root.children:
@@ -216,6 +271,11 @@ class MCTSAI:
         window_size = 1000
         wins, losses, draws = 0, 0, 0
         
+        # For neural network training
+        training_states = []
+        training_policies = []
+        training_values = []
+        
         for episode in range(episodes):
             board = [[None for _ in range(3)] for _ in range(3)]
             current_player = "X"  # X always starts
@@ -223,11 +283,22 @@ class MCTSAI:
             
             # Play out the game
             while True:
+                # Store current state for training
+                game_history.append((copy.deepcopy(board), current_player))
+                
                 # Use a shorter time limit during training for speed
                 move = self.best_move(board, time_limit=0.1)
                 
                 # Apply move
                 board = self.make_move(copy.deepcopy(board), move, current_player)
+                
+                # Store move information for policy training
+                move_index = move[0] * 3 + move[1]
+                policy = torch.zeros(9, device=self.device)
+                policy[move_index] = 1.0
+                
+                # Store the move that was taken from this state
+                game_history[-1] = (game_history[-1][0], game_history[-1][1], move_index, policy)
                 
                 # Check for game end
                 winner = self.check_winner(board)
@@ -235,14 +306,44 @@ class MCTSAI:
                     # Record outcome
                     if winner == self.player:
                         wins += 1
+                        game_value = 1.0
                     elif winner == "draw":
                         draws += 1
+                        game_value = 0.5
                     else:
                         losses += 1
+                        game_value = 0.0
                     break
                 
                 # Switch player
                 current_player = 'O' if current_player == 'X' else 'X'
+            
+            # Process game history for neural network training
+            for state, player, move_idx, policy in game_history:
+                # Adjust value based on player perspective
+                player_value = game_value if player == self.player else 1.0 - game_value
+                
+                # Store training data
+                training_states.append(state)
+                training_policies.append(policy)
+                training_values.append(player_value)
+            
+            # Train neural network periodically
+            if len(training_states) >= 256 or (episode + 1) % 100 == 0:
+                if training_states:
+                    # Use the latest 2048 examples to avoid memory issues
+                    batch_size = min(2048, len(training_states))
+                    loss = self.train_policy_network(
+                        training_states[-batch_size:],
+                        training_policies[-batch_size:],
+                        training_values[-batch_size:]
+                    )
+                    # print(f"Episode {episode+1}, NN Training loss: {loss:.4f}")
+                    
+                    # Clear training data after using it
+                    training_states = []
+                    training_policies = []
+                    training_values = []
             
             # Save statistics periodically
             if (episode + 1) % window_size == 0 and episode > 0:
@@ -263,6 +364,8 @@ class MCTSAI:
                     if win_rate > best_win_rate:
                         best_win_rate = win_rate
                         no_improvement_count = 0
+                        # Save best model
+                        self.save_model()
                     else:
                         no_improvement_count += 1
                     
@@ -272,8 +375,8 @@ class MCTSAI:
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
-
-        # Save the trained model
+    
+        # Save the final model
         self.save_model()
     
     def train_against_random(self, episodes=5000):
@@ -281,18 +384,37 @@ class MCTSAI:
         wins, losses, draws = 0, 0, 0
         stats_window = 1000  # Number of episodes between stats updates
         
+        # For neural network training
+        training_states = []
+        training_policies = []
+        training_values = []
+        
         for episode in range(episodes):
             board = [[None for _ in range(3)] for _ in range(3)]
             current_player = "X"  # X always starts
+            game_history = []
             
             # Determine player/opponent markers
             mcts_player = self.player
             opponent_player = 'X' if mcts_player == 'O' else 'O'
             
             while True:
+                # Store state information when it's MCTS player's turn
+                if current_player == mcts_player:
+                    game_history.append((copy.deepcopy(board), current_player))
+                
                 if current_player == mcts_player:
                     # MCTS player's turn
                     move = self.best_move(board, time_limit=0.1)
+                    
+                    # Store move information for policy training
+                    if game_history:
+                        move_index = move[0] * 3 + move[1]
+                        policy = torch.zeros(9, device=self.device)
+                        policy[move_index] = 1.0
+                        
+                        # Update the last stored state with move information
+                        game_history[-1] = (game_history[-1][0], game_history[-1][1], move_index, policy)
                 else:
                     # Random player's turn
                     moves = self.get_valid_moves(board)
@@ -307,16 +429,43 @@ class MCTSAI:
                     # Record outcome from MCTS perspective
                     if winner == mcts_player:
                         wins += 1
+                        game_value = 1.0
                     elif winner == "draw":
                         draws += 1
-                    elif winner:
-                        losses += 1
+                        game_value = 0.5
                     else:
-                        draws += 1  # Full board, no winner
+                        losses += 1
+                        game_value = 0.0
                     break
                 
                 # Switch player
                 current_player = 'O' if current_player == 'X' else 'X'
+            
+            # Process game history for neural network training
+            for state, player, move_idx, policy in game_history:
+                # Only store MCTS player's moves for training
+                if player == mcts_player:
+                    # Store training data
+                    training_states.append(state)
+                    training_policies.append(policy)
+                    training_values.append(game_value)
+            
+            # Train neural network periodically
+            if len(training_states) >= 256 or (episode + 1) % 100 == 0:
+                if training_states:
+                    # Use the latest 2048 examples to avoid memory issues
+                    batch_size = min(2048, len(training_states))
+                    loss = self.train_policy_network(
+                        training_states[-batch_size:],
+                        training_policies[-batch_size:],
+                        training_values[-batch_size:]
+                    )
+                    # print(f"Episode {episode+1}, NN Training loss: {loss:.4f}")
+                    
+                    # Clear training data after using it
+                    training_states = []
+                    training_policies = []
+                    training_values = []
             
             # Save statistics periodically
             if (episode + 1) % stats_window == 0 and episode > 0:
@@ -331,6 +480,10 @@ class MCTSAI:
                 
                 # Print current stats
                 print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}")
+                
+                # Save intermediate model
+                if episode % (stats_window * 5) == 0:
+                    self.save_model()
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
@@ -344,9 +497,15 @@ class MCTSAI:
         wins, losses, draws = 0, 0, 0
         stats_window = 1000  # Number of episodes between stats updates
         
+        # For neural network training
+        training_states = []
+        training_policies = []
+        training_values = []
+        
         for episode in range(episodes):
             board = [[None for _ in range(3)] for _ in range(3)]
             current_player = "X"  # X always starts
+            game_history = []
             
             # Determine player/opponent markers
             mcts_player = self.player
@@ -356,9 +515,22 @@ class MCTSAI:
             minimax_ai.set_player(opponent_player)
             
             while True:
+                # Store state information when it's MCTS player's turn
+                if current_player == mcts_player:
+                    game_history.append((copy.deepcopy(board), current_player))
+                
                 if current_player == mcts_player:
                     # MCTS player's turn
                     move = self.best_move(board, time_limit=0.1)
+                    
+                    # Store move information for policy training
+                    if game_history:
+                        move_index = move[0] * 3 + move[1]
+                        policy = torch.zeros(9, device=self.device)
+                        policy[move_index] = 1.0
+                        
+                        # Update the last stored state with move information
+                        game_history[-1] = (game_history[-1][0], game_history[-1][1], move_index, policy)
                 else:
                     # Minimax player's turn
                     move = minimax_ai.best_move(board, depth_limit)
@@ -372,16 +544,46 @@ class MCTSAI:
                     # Record outcome from MCTS perspective
                     if winner == mcts_player:
                         wins += 1
+                        game_value = 1.0
                     elif winner == "draw":
                         draws += 1
+                        game_value = 0.5
                     elif winner:
                         losses += 1
+                        game_value = 0.0
                     else:
                         draws += 1  # Full board, no winner
+                        game_value = 0.5
                     break
                 
                 # Switch player
                 current_player = 'O' if current_player == 'X' else 'X'
+            
+            # Process game history for neural network training
+            for state, player, move_idx, policy in game_history:
+                # Only store MCTS player's moves for training
+                if player == mcts_player:
+                    # Store training data
+                    training_states.append(state)
+                    training_policies.append(policy)
+                    training_values.append(game_value)
+            
+            # Train neural network periodically
+            if len(training_states) >= 256 or (episode + 1) % 100 == 0:
+                if training_states:
+                    # Use the latest 2048 examples to avoid memory issues
+                    batch_size = min(2048, len(training_states))
+                    loss = self.train_policy_network(
+                        training_states[-batch_size:],
+                        training_policies[-batch_size:],
+                        training_values[-batch_size:]
+                    )
+                    # print(f"Episode {episode+1}, NN Training loss: {loss:.4f}")
+                    
+                    # Clear training data after using it
+                    training_states = []
+                    training_policies = []
+                    training_values = []
             
             # Save statistics periodically
             if (episode + 1) % stats_window == 0 and episode > 0:
@@ -396,6 +598,10 @@ class MCTSAI:
                 
                 # Print current stats
                 print(f"Episode: {episode + 1}/{episodes}, Win Rate: {win_rate:.2f}, Loss Rate: {loss_rate:.2f}, Draw Rate: {draw_rate:.2f}")
+                
+                # Save intermediate model
+                if episode % (stats_window * 5) == 0:
+                    self.save_model()
                 
                 # Reset counters
                 wins, losses, draws = 0, 0, 0
@@ -421,8 +627,47 @@ class MCTSAI:
         
         print("Curriculum training complete!")
     
+    def train_policy_network(self, states, policies, values):
+        """Train the policy network from collected experience."""
+        # Convert training data to tensors
+        state_tensor = torch.stack([self.board_to_tensor(s) for s in states])
+        policy_tensor = torch.stack(policies)
+        value_tensor = torch.from_numpy(np.array(values)).float().to(self.device)
+        
+        # Use mixed precision for faster training if available
+        scaler = torch.amp.GradScaler() if torch.cuda.is_available() else None
+        
+        # Forward pass with optional mixed precision
+        self.optimizer.zero_grad()
+        
+        if scaler:
+            with torch.amp.autocast('cuda'):
+                pred_policies, pred_values = self.policy_net(state_tensor)
+                policy_loss = nn.functional.cross_entropy(pred_policies, policy_tensor)
+                value_loss = nn.functional.mse_loss(pred_values.squeeze(), value_tensor)
+                total_loss = policy_loss + value_loss
+            
+            # Backward pass with gradient scaling
+            scaler.scale(total_loss).backward()
+            scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
+            # Original implementation for CPUs or older GPUs
+            pred_policies, pred_values = self.policy_net(state_tensor)
+            policy_loss = nn.functional.cross_entropy(pred_policies, policy_tensor)
+            value_loss = nn.functional.mse_loss(pred_values.squeeze(), value_tensor)
+            total_loss = policy_loss + value_loss
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+            self.optimizer.step()
+        
+        return total_loss.item()
+    
     def save_model(self, filename=None):
-        """Save MCTS statistics and training data."""
+        """Save MCTS statistics, training data and neural network."""
         model_path = get_model_path("mcts") if filename is None else filename
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         
@@ -433,21 +678,19 @@ class MCTSAI:
                 'exploration_weight': self.exploration_weight,
                 'time_limit': self.time_limit,
                 'temperature': self.temperature
-            }
+            },
+            'policy_net': self.policy_net.state_dict()
         }
         
-        with open(model_path, 'wb') as f:
-            pickle.dump(data, f)
-        
+        torch.save(data, model_path)
         print(f"MCTS model saved to {model_path}")
     
     def load_model(self, filename=None):
-        """Load MCTS statistics and training data."""
+        """Load MCTS statistics, training data and neural network."""
         try:
             model_path = get_model_path("mcts") if filename is None else filename
             if os.path.exists(model_path):
-                with open(model_path, 'rb') as f:
-                    data = pickle.load(f)
+                data = torch.load(model_path, map_location=self.device)
                 
                 self.position_values = data.get('position_values', {})
                 self.training_stats = data.get('training_stats', {'wins': [], 'losses': [], 'draws': []})
@@ -457,6 +700,11 @@ class MCTSAI:
                 self.exploration_weight = params.get('exploration_weight', self.exploration_weight)
                 self.time_limit = params.get('time_limit', self.time_limit)
                 self.temperature = params.get('temperature', self.temperature)
+                
+                # Load neural network weights if available
+                if 'policy_net' in data:
+                    self.policy_net.load_state_dict(data['policy_net'])
+                    self.policy_net.to(self.device)  # Ensure it's on the right device
                 
                 print(f"MCTS model loaded from {model_path}")
                 return True
@@ -588,47 +836,43 @@ class MCTSAI:
         node.children.append(child_node)
         return child_node
     
-    def simulate(self, board, player):
-        """Run a simulation with better heuristics than random play."""
+    def guided_simulation(self, board, player, policy):
+        """Run a single simulation guided by the provided policy."""
         current_player = player
         board_copy = copy.deepcopy(board)
         move_history = []  # Track moves for RAVE
         
         while self.check_winner(board_copy) is None and self.get_valid_moves(board_copy):
-            # Check for winning move
-            winning_move = self.find_winning_move(board_copy, current_player)
-            if winning_move:
-                move = winning_move
-            # Check for blocking move (prevent opponent win)
-            else:
-                opponent = 'O' if current_player == 'X' else 'X'
-                blocking_move = self.find_winning_move(board_copy, opponent)
-                if blocking_move:
-                    move = blocking_move
-                # Otherwise use weighted random with some domain knowledge
+            valid_moves = self.get_valid_moves(board_copy)
+            
+            # Create a mask for valid moves
+            mask = np.zeros(9)
+            for r, c in valid_moves:
+                mask[r*3 + c] = 1
+                
+            # Apply mask and renormalize policy
+            masked_policy = policy * mask
+            policy_sum = masked_policy.sum()
+            
+            if policy_sum > 0:
+                masked_policy = masked_policy / policy_sum
+                # Check for immediate winning move
+                winning_move = self.find_winning_move(board_copy, current_player)
+                if winning_move:
+                    move = winning_move
+                # Check for blocking move
                 else:
-                    moves = self.get_valid_moves(board_copy)
-                    
-                    # Prefer center, then corners, then edges with weighted selection
-                    weights = []
-                    for r, c in moves:
-                        if (r, c) == (1, 1):  # Center
-                            weights.append(3.0)
-                        elif (r, c) in [(0,0), (0,2), (2,0), (2,2)]:  # Corners
-                            weights.append(2.0)
-                        else:  # Edges
-                            weights.append(1.0)
-                    
-                    total_weight = sum(weights)
-                    selection = random.uniform(0, total_weight)
-                    current_weight = 0
-                    for i, (move_candidate, weight) in enumerate(zip(moves, weights)):
-                        current_weight += weight
-                        if current_weight >= selection:
-                            move = move_candidate
-                            break
+                    opponent = 'O' if current_player == 'X' else 'X'
+                    blocking_move = self.find_winning_move(board_copy, opponent)
+                    if blocking_move:
+                        move = blocking_move
                     else:
-                        move = random.choice(moves)  # Fallback
+                        # Sample move proportionally to policy probabilities
+                        flat_index = np.random.choice(9, p=masked_policy)
+                        move = (flat_index // 3, flat_index % 3)
+            else:
+                # Fallback to heuristic
+                move = self.select_move_heuristic(board_copy, current_player)
             
             # Record move for RAVE statistics
             move_history.append((current_player, move))
@@ -639,6 +883,121 @@ class MCTSAI:
         
         result = self.check_winner(board_copy)
         return result, move_history
+    
+    def simulate(self, board, player):
+        """Run a simulation with neural network guidance."""
+        current_player = player
+        board_copy = copy.deepcopy(board)
+        move_history = []  # Track moves for RAVE
+        
+        while self.check_winner(board_copy) is None and self.get_valid_moves(board_copy):
+            # Convert board to tensor for neural network
+            board_tensor = self.board_to_tensor(board_copy).unsqueeze(0)  # Add batch dimension
+            
+            # Get policy and value prediction
+            with torch.no_grad():
+                policy_probs, value = self.policy_net(board_tensor)
+                policy_probs = policy_probs.squeeze().cpu().numpy()
+            
+            # Create a mask for valid moves
+            valid_moves = self.get_valid_moves(board_copy)
+            mask = np.zeros(9)
+            for r, c in valid_moves:
+                mask[r*3 + c] = 1
+                
+            # Apply mask and renormalize
+            policy_probs = policy_probs * mask
+            policy_sum = policy_probs.sum()
+            
+            if policy_sum > 0:
+                policy_probs = policy_probs / policy_sum
+                # Still check for immediate winning move
+                winning_move = self.find_winning_move(board_copy, current_player)
+                if winning_move:
+                    move = winning_move
+                # Check for blocking move
+                else:
+                    opponent = 'O' if current_player == 'X' else 'X'
+                    blocking_move = self.find_winning_move(board_copy, opponent)
+                    if blocking_move:
+                        move = blocking_move
+                    else:
+                        # Sample move proportionally to policy probabilities
+                        flat_index = np.random.choice(9, p=policy_probs)
+                        move = (flat_index // 3, flat_index % 3)
+            else:
+                # Fallback to original heuristic strategy
+                move = self.select_move_heuristic(board_copy, current_player)
+                
+            # Record move for RAVE statistics
+            move_history.append((current_player, move))
+            
+            # Make the move
+            board_copy = self.make_move(board_copy, move, current_player)
+            current_player = 'O' if current_player == 'X' else 'X'
+        
+        result = self.check_winner(board_copy)
+        return result, move_history
+    
+    def batch_simulate(self, boards, players, batch_size=64):
+        """Run multiple simulations in parallel using GPU."""
+        # Consider GPU memory when setting batch size
+        if torch.cuda.is_available():
+            # For RTX 3050 with ~4GB VRAM, adjust based on available memory
+            free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+            free_memory_gb = free_memory / (1024**3)
+            # Dynamic batch sizing based on available memory
+            adaptive_batch_size = min(int(free_memory_gb * 1000), batch_size)
+            batch_size = max(8, adaptive_batch_size)  # Minimum batch size of 8
+        
+        results = []
+        move_histories = []
+        
+        for i in range(0, len(boards), batch_size):
+            batch_boards = boards[i:i+batch_size]
+            batch_players = players[i:i+batch_size]
+            
+            # Convert boards to tensors
+            board_tensors = [self.board_to_tensor(board) for board in batch_boards]
+            stacked_boards = torch.stack(board_tensors)
+            
+            # Get policy predictions for all boards at once
+            with torch.no_grad():
+                policies, values = self.policy_net(stacked_boards)
+                policies = policies.cpu().numpy()
+                values = values.cpu().numpy()
+            
+            # Process each board with its policy
+            for j, (board, player, policy) in enumerate(zip(batch_boards, batch_players, policies)):
+                result, history = self.guided_simulation(board, player, policy)
+                results.append(result)
+                move_histories.append(history)
+        
+        return results, move_histories
+    
+    def select_move_heuristic(self, board, player):
+        """Fallback heuristic move selection."""
+        moves = self.get_valid_moves(board)
+        
+        # Prefer center, then corners, then edges with weighted selection
+        weights = []
+        for r, c in moves:
+            if (r, c) == (1, 1):  # Center
+                weights.append(3.0)
+            elif (r, c) in [(0,0), (0,2), (2,0), (2,2)]:  # Corners
+                weights.append(2.0)
+            else:  # Edges
+                weights.append(1.0)
+        
+        total_weight = sum(weights)
+        selection = random.uniform(0, total_weight)
+        current_weight = 0
+        for i, (move, weight) in enumerate(zip(moves, weights)):
+            current_weight += weight
+            if current_weight >= selection:
+                return move
+        
+        return random.choice(moves)  # Fallback
     
     def find_winning_move(self, board, player):
         """Find an immediate winning move if it exists."""
@@ -730,6 +1089,24 @@ class MCTSAI:
             row, col = i // 3, i % 3
             board_2d[row][col] = board_1d[i] if board_1d[i] != " " else None
         return board_2d
+    
+    def board_to_tensor(self, board):
+        """Convert the board to a tensor representation."""
+        # 3 channels: player pieces, opponent pieces, and empty spaces
+        tensor_board = torch.zeros(3, 3, 3, device=self.device)
+        
+        opponent = 'X' if self.player == 'O' else 'O'
+        
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == self.player:
+                    tensor_board[0, i, j] = 1.0
+                elif board[i][j] == opponent:
+                    tensor_board[1, i, j] = 1.0
+                elif board[i][j] is None:
+                    tensor_board[2, i, j] = 1.0
+                    
+        return tensor_board
     
 
 class MCTSNodePool:

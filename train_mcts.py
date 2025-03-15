@@ -1,13 +1,19 @@
 from mcts_ai import MCTSAI
 import time
 from utils import get_model_path
+import torch
 
 def main():
     start_time = time.time()
     
+    # Optimize CUDA settings for training
+    if torch.cuda.is_available():
+        # Set to prevent fragmentation of GPU memory
+        torch.backends.cudnn.benchmark = True
+    
     # Create an MCTS agent
     agent = MCTSAI(exploration_weight=1.41, time_limit=0.5, temperature=0.1)
-    
+
     # Force retraining (even if model file exists)
     print("Training MCTS agent...")
     
