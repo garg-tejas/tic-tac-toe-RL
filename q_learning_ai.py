@@ -118,7 +118,17 @@ class QLearningTicTacToe:
             q_table[state_key] = [0.0] * 9
         
         # Get valid moves in next state
-        next_board = list(next_state_key) if isinstance(next_state_key, tuple) else next_state_key
+        if isinstance(next_state_key, tuple):
+            next_board = list(next_state_key)
+        elif isinstance(next_state_key, str) and next_state_key.startswith('('):
+            # Try to parse the string representation of a tuple
+            import ast
+            try:
+                next_board = list(ast.literal_eval(next_state_key))
+            except:
+                next_board = next_state_key
+        else:
+            next_board = next_state_key
         valid_moves = self.get_valid_moves(next_board)
         
         # Calculate max future Q-value
@@ -484,9 +494,9 @@ class QLearningTicTacToe:
                 current_player = "O" if current_player == "X" else "X"
             
             # Learning phase - only update AI's Q-table
-            for state, action, reward, next_state, done in game_history:
+            for state, action, reward, next_state, done, player in game_history:
                 self.update_q_value(state, action, reward, next_state, self.q_table)
-                self.add_to_replay_buffer((state, action, reward, next_state, done, "O"))
+                self.add_to_replay_buffer((state, action, reward, next_state, done, player))
             
             if episode % 10 == 0:
                 self.learn_from_replay_buffer()
@@ -563,9 +573,9 @@ class QLearningTicTacToe:
                 current_player = "O" if current_player == "X" else "X"
             
             # Learning phase - only update AI's Q-table
-            for state, action, reward, next_state, done in game_history:
+            for state, action, reward, next_state, done, player in game_history:
                 self.update_q_value(state, action, reward, next_state, self.q_table)
-                self.add_to_replay_buffer((state, action, reward, next_state, done, "O"))
+                self.add_to_replay_buffer((state, action, reward, next_state, done, player))
             
             if episode % 10 == 0:
                 self.learn_from_replay_buffer()
@@ -703,11 +713,15 @@ class QLearningTicTacToe:
         
         # Then corners
         for corner in [0, 2, 6, 8]:
-            self.q_table[(empty_board, corner)] = 0.2
+            if empty_board not in self.q_table:
+                self.q_table[empty_board] = [0.0] * 9
+            self.q_table[empty_board][corner] = 0.2
         
         # Sides are less valuable
         for side in [1, 3, 5, 7]:
-            self.q_table[(empty_board, side)] = 0.1
+            if empty_board not in self.q_table:
+                self.q_table[empty_board] = [0.0] * 9
+            self.q_table[empty_board][side] = 0.1
         
         # Set up similar values for opponent_q_table
         self.opponent_q_table = self.q_table.copy()
@@ -734,7 +748,9 @@ class QLearningTicTacToe:
                         board[pos] = player
                     
                     state = self.get_canonical_state(board)
-                    q_table[(state, empty_pos)] = 0.9  # High value for completing a win
+                    if state not in q_table:
+                        q_table[state] = [0.0] * 9
+                    q_table[state][empty_pos] = 0.9  # High value for completing a win
                     
                     # Create a board with two opponent marks in a row and initialize high Q-value for blocking move
                     board = [" "] * 9
@@ -742,7 +758,9 @@ class QLearningTicTacToe:
                         board[pos] = opponent
                     
                     state = self.get_canonical_state(board)
-                    q_table[(state, empty_pos)] = 0.7  # High value for blocking opponent's win
+                    if state not in q_table:
+                        q_table[state] = [0.0] * 9
+                    q_table[state][empty_pos] = 0.7  # High value for blocking opponent's win
 
     def choose_action_ucb(self, board, q_table, game_mode=False):
         """Choose action using UCB exploration strategy."""
@@ -754,7 +772,13 @@ class QLearningTicTacToe:
         
         # In actual gameplay, use greedy strategy
         if game_mode:
-            q_values = [q_table.get((state, move), 0) for move in valid_moves]
+            state_key = self.get_state_key(state)
+            q_values = []
+            for move in valid_moves:
+                if state_key in q_table:
+                    q_values.append(q_table[state_key][move])
+                else:
+                    q_values.append(0)
             max_q = max(q_values)
             best_moves = [valid_moves[i] for i, q in enumerate(q_values) if q == max_q]
             return random.choice(best_moves)
@@ -763,8 +787,12 @@ class QLearningTicTacToe:
         total_visits = sum(self.visit_counts.get((state, move), 0) + 1 for move in valid_moves)
         ucb_values = []
         
+        state_key = self.get_state_key(state)
         for move in valid_moves:
-            q_value = q_table.get((state, move), 0)
+            if state_key in q_table:
+                q_value = q_table[state_key][move]
+            else:
+                q_value = 0
             visit_count = self.visit_counts.get((state, move), 0) + 1
             exploration = 1.0 * math.sqrt(math.log(total_visits + 1) / visit_count)
             ucb_values.append(q_value + exploration)
