@@ -710,6 +710,10 @@ class DQNTicTacToe:
             # Apply soft update every few episodes instead of every episode
             if episode % 5 == 0:
                 self.soft_update_target_network(tau=0.01)
+
+            # Step the scheduler periodically
+            if episode % 100 == 0:
+                self.scheduler.step()
     
             # Decay epsilon every 100 episodes
             if episode % 100 == 0:
@@ -817,6 +821,10 @@ class DQNTicTacToe:
             # Apply soft update every few episodes instead of every episode
             if episode % 5 == 0:
                 self.soft_update_target_network(tau=0.01)
+
+            # Step the scheduler periodically
+            if episode % 100 == 0:
+                self.scheduler.step()
     
             # Decay epsilon every 100 episodes
             if episode % 100 == 0:
