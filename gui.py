@@ -41,7 +41,14 @@ class TicTacToeGUI:
         self.selected_ai = None
         self.minimax_ai = MinimaxAI()
         self.q_learning_ai = QLearningTicTacToe()  # Initialize Q-Learning AI
-
+    
+        try:
+            from mcts_ai import MCTSAI
+            self.mcts_ai = MCTSAI(exploration_weight=1.41, time_limit=0.5, temperature=0.1)
+        except ImportError:
+            self.mcts_ai = None
+            print("Could not import MCTS AI")
+    
         try:
             from dqn_ai import DQNTicTacToe
             self.dqn_ai = DQNTicTacToe()
@@ -60,7 +67,7 @@ class TicTacToeGUI:
         self.scores = {'X': 0, 'O': 0, 'Draw': 0}
         self.score_updated = False
         self.load_scores()
-
+    
         self.player_marker = 'X'  # Default
         self.game_mode = "AI"     # Default
         
@@ -185,20 +192,24 @@ class TicTacToeGUI:
             # Delay slightly for UX
             pygame.time.delay(800)  # Increased delay
             
-            try:
-                # Get AI move with better error handling
-                if self.selected_ai == "Minimax":
-                    ai_row, ai_col = self.minimax_ai.best_move(self.game.board)
-                elif self.selected_ai == "Q-Learning":
-                    ai_row, ai_col = self.q_learning_ai.best_move(self.game.board)
-                elif self.selected_ai == "DQN" and self.dqn_ai:
-                    ai_row, ai_col = self.dqn_ai.best_move(self.game.board)
-                else:
-                    raise ValueError(f"AI type '{self.selected_ai}' not fully implemented")
-            except Exception as e:
-                print(f"Error with AI move: {e}. Using random fallback.")
+        try:
+            if self.selected_ai == "Minimax":
+                ai_row, ai_col = self.minimax_ai.best_move(self.game.board)
+            elif self.selected_ai == "Q-Learning":
+                ai_row, ai_col = self.q_learning_ai.best_move(self.game.board)
+            elif self.selected_ai == "DQN" and self.dqn_ai:
+                ai_row, ai_col = self.dqn_ai.best_move(self.game.board)
+            elif self.selected_ai == "MCTS" and self.mcts_ai:
+                # For MCTS, set the player and pass time limit
+                self.mcts_ai.set_player('X' if self.player_marker == 'O' else 'O')
+                ai_row, ai_col = self.mcts_ai.best_move(self.game.board, time_limit=1.0)
+            else:  # Default to random if AI is not properly initialized
                 valid_moves = self.game.get_available_moves()
-                ai_row, ai_col = random.choice(valid_moves)
+                ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
+        except Exception as e:
+            print(f"AI error: {e}. Using random fallback.")
+            valid_moves = self.game.get_available_moves()
+            ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
             
             # Make AI's move
             if self.game.make_move(ai_row, ai_col):
@@ -574,15 +585,24 @@ class TicTacToeGUI:
                             if self.game_mode == "AI" and self.game.winner is None:
                                 pygame.time.delay(200)
                                 
+                            try:
                                 if self.selected_ai == "Minimax":
                                     ai_row, ai_col = self.minimax_ai.best_move(self.game.board)
                                 elif self.selected_ai == "Q-Learning":
                                     ai_row, ai_col = self.q_learning_ai.best_move(self.game.board)
                                 elif self.selected_ai == "DQN" and self.dqn_ai:
                                     ai_row, ai_col = self.dqn_ai.best_move(self.game.board)
+                                elif self.selected_ai == "MCTS" and self.mcts_ai:
+                                    # For MCTS, set the player and pass time limit
+                                    self.mcts_ai.set_player('X' if self.player_marker == 'O' else 'O')
+                                    ai_row, ai_col = self.mcts_ai.best_move(self.game.board, time_limit=1.0)
                                 else:  # Default to random if AI is not properly initialized
                                     valid_moves = self.game.get_available_moves()
                                     ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
+                            except Exception as e:
+                                print(f"AI error: {e}. Using random fallback.")
+                                valid_moves = self.game.get_available_moves()
+                                ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
                                 
                                 if self.game.make_move(ai_row, ai_col):
                                     # Create animation for AI move
