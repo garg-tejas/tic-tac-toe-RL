@@ -260,6 +260,160 @@ class MCTSAI:
         self.node_pool.recycle_subtree(root)
         
         return best_child.move
+    
+    def pretrain_on_expert_moves(self, num_examples=10000, epochs=10):
+        """Pre-train the neural network on expert Tic-Tac-Toe moves."""
+        print("Pre-training on expert moves...")
+        
+        # Containers for training data
+        training_states = []
+        training_policies = []
+        training_values = []
+        
+        # Generate expert data
+        for _ in range(num_examples):
+            # Create a random board with 1-5 moves already played
+            board = [[None for _ in range(3)] for _ in range(3)]
+            moves_made = random.randint(1, 5)
+            current_player = 'X'  # Start with X
+            
+            # Make random moves to reach a mid-game position
+            for _ in range(moves_made):
+                valid_moves = self.get_valid_moves(board)
+                if not valid_moves:
+                    break
+                move = random.choice(valid_moves)
+                board = self.make_move(copy.deepcopy(board), move, current_player)
+                current_player = 'O' if current_player == 'X' else 'X'
+                
+                # Stop if game is over
+                if self.check_winner(board):
+                    break
+            
+            # If game is already over, skip this example
+            winner = self.check_winner(board)
+            if winner:
+                continue
+                
+            # Now find the "expert move" for this position
+            best_move = self.get_expert_move(board, current_player)
+            if best_move:
+                # Create one-hot policy vector
+                policy = torch.zeros(9, device=self.device)
+                move_index = best_move[0] * 3 + best_move[1]
+                policy[move_index] = 1.0
+                
+                # Estimate position value (simplified)
+                value = 0.8  # Assume expert moves lead to good outcomes
+                
+                # Store the example
+                training_states.append(board)
+                training_policies.append(policy)
+                training_values.append(value)
+        
+        # Train for multiple epochs on this data
+        print(f"Generated {len(training_states)} expert examples")
+        for epoch in range(epochs):
+            # Shuffle the data
+            indices = list(range(len(training_states)))
+            random.shuffle(indices)
+            shuffled_states = [training_states[i] for i in indices]
+            shuffled_policies = [training_policies[i] for i in indices]
+            shuffled_values = [training_values[i] for i in indices]
+            
+            # Train in batches
+            batch_size = 256
+            total_loss = 0
+            num_batches = 0
+            
+            for i in range(0, len(shuffled_states), batch_size):
+                batch_states = shuffled_states[i:i+batch_size]
+                batch_policies = shuffled_policies[i:i+batch_size]
+                batch_values = shuffled_values[i:i+batch_size]
+                
+                loss = self.train_policy_network(batch_states, batch_policies, batch_values)
+                total_loss += loss
+                num_batches += 1
+            
+            avg_loss = total_loss / max(1, num_batches)
+            print(f"Pre-training epoch {epoch+1}/{epochs}, Avg loss: {avg_loss:.4f}")
+        
+        print("Pre-training complete")
+    
+    def get_expert_move(self, board, player):
+        """Determine the best move according to expert Tic-Tac-Toe strategy."""
+        # Priority 1: Win if possible
+        winning_move = self.find_winning_move(board, player)
+        if winning_move:
+            return winning_move
+        
+        # Priority 2: Block opponent's win
+        opponent = 'O' if player == 'X' else 'X'
+        blocking_move = self.find_winning_move(board, opponent)
+        if blocking_move:
+            return blocking_move
+        
+        # Priority 3: Take center if available
+        if board[1][1] is None:
+            return (1, 1)
+        
+        # Priority 4: Take corner if opponent has center
+        if board[1][1] == opponent:
+            corners = [(0,0), (0,2), (2,0), (2,2)]
+            available_corners = [corner for corner in corners if board[corner[0]][corner[1]] is None]
+            if available_corners:
+                return random.choice(available_corners)
+        
+        # Priority 5: Create a fork (two potential winning ways)
+        fork_move = self.find_fork_move(board, player)
+        if fork_move:
+            return fork_move
+        
+        # Priority 6: Block opponent's fork
+        opponent_fork = self.find_fork_move(board, opponent)
+        if opponent_fork:
+            return opponent_fork
+        
+        # Priority 7: Take any corner
+        corners = [(0,0), (0,2), (2,0), (2,2)]
+        available_corners = [corner for corner in corners if board[corner[0]][corner[1]] is None]
+        if available_corners:
+            return random.choice(available_corners)
+        
+        # Priority 8: Take any edge
+        edges = [(0,1), (1,0), (1,2), (2,1)]
+        available_edges = [edge for edge in edges if board[edge[0]][edge[1]] is None]
+        if available_edges:
+            return random.choice(available_edges)
+        
+        # If nothing else, take any available move
+        valid_moves = self.get_valid_moves(board)
+        if valid_moves:
+            return random.choice(valid_moves)
+        
+        return None
+
+    def find_fork_move(self, board, player):
+        """Find move that creates two winning ways (a fork)."""
+        valid_moves = self.get_valid_moves(board)
+        for move in valid_moves:
+            # Try this move
+            board_copy = copy.deepcopy(board)
+            board_copy[move[0]][move[1]] = player
+            
+            # Count how many winning ways this creates
+            winning_ways = 0
+            for test_move in self.get_valid_moves(board_copy):
+                test_board = copy.deepcopy(board_copy)
+                test_board[test_move[0]][test_move[1]] = player
+                if self.check_winner(test_board) == player:
+                    winning_ways += 1
+            
+            # If it creates 2+ winning ways, it's a fork
+            if winning_ways >= 2:
+                return move
+        
+        return None
 
     def train(self, episodes=10000, early_stopping=True, patience=5):
         """Train MCTS by self-play and record statistics for visualization."""
@@ -395,7 +549,7 @@ class MCTSAI:
             game_history = []
             
             # Determine player/opponent markers
-            mcts_player = self.player
+            mcts_player = random.choice(['X', 'O'])
             opponent_player = 'X' if mcts_player == 'O' else 'O'
             
             while True:
@@ -508,7 +662,7 @@ class MCTSAI:
             game_history = []
             
             # Determine player/opponent markers
-            mcts_player = self.player
+            mcts_player = random.choice(['X', 'O'])
             opponent_player = 'X' if mcts_player == 'O' else 'O'
             
             # Set minimax player
@@ -521,7 +675,7 @@ class MCTSAI:
                 
                 if current_player == mcts_player:
                     # MCTS player's turn
-                    move = self.best_move(board, time_limit=0.1)
+                    move = self.best_move(board, time_limit=0.5)
                     
                     # Store move information for policy training
                     if game_history:
@@ -608,6 +762,10 @@ class MCTSAI:
     
     def train_curriculum(self, episodes=50000):
         """Train using curriculum learning - increasing difficulty."""
+        # First step: Pre-train on expert moves
+        print("Starting pre-training on expert moves...")
+        self.pretrain_on_expert_moves(num_examples=5000, epochs=5)
+
         total_episodes = episodes
         # First stage: train against random opponent
         print("Stage 1: Training against random opponent...")
