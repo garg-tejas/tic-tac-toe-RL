@@ -194,7 +194,7 @@ class TicTacToeGUI:
             
         try:
             if self.selected_ai == "Minimax":
-                ai_row, ai_col = self.minimax_ai.best_move(self.game.board)
+                ai_row, ai_col = self.minimax_ai.best_move(self.game.board, depth_limit=4)
             elif self.selected_ai == "Q-Learning":
                 ai_row, ai_col = self.q_learning_ai.best_move(self.game.board)
             elif self.selected_ai == "DQN" and self.dqn_ai:
@@ -211,23 +211,23 @@ class TicTacToeGUI:
             valid_moves = self.game.get_available_moves()
             ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
             
-            # Make AI's move
-            if self.game.make_move(ai_row, ai_col):
-                # Create animation for AI move
-                cell_width = (self.WIDTH-200) // self.BOARD_COLS
-                cell_height = (self.HEIGHT-350) // self.BOARD_ROWS
-                center_x = ai_col * cell_width + 100 + cell_width // 2
-                center_y = ai_row * cell_height + 200 + cell_height // 2
+        # Make AI's move
+        if self.game.make_move(ai_row, ai_col):
+            # Create animation for AI move
+            cell_width = (self.WIDTH-200) // self.BOARD_COLS
+            cell_height = (self.HEIGHT-350) // self.BOARD_ROWS
+            center_x = ai_col * cell_width + 100 + cell_width // 2
+            center_y = ai_row * cell_height + 200 + cell_height // 2
                 
-                size = min(cell_width, cell_height) // 2 - 15
-                self.animations.append(
-                    MarkAnimation(
-                        self.game.board[ai_row][ai_col],
-                        center_x,
-                        center_y,
-                        size
-                    )
+            size = min(cell_width, cell_height) // 2 - 15
+            self.animations.append(
+                MarkAnimation(
+                    self.game.board[ai_row][ai_col],
+                    center_x,
+                    center_y,
+                    size
                 )
+            )
         
         return True
     
@@ -532,6 +532,46 @@ class TicTacToeGUI:
         self.animations = []
         self.win_animation = None
         self.score_updated = False
+        
+        # If player chose 'O', let AI make the first move
+        if self.game_mode == "AI" and self.player_marker == 'O':
+            pygame.time.delay(500)  # Brief delay for UX
+            
+            try:
+                if self.selected_ai == "Minimax":
+                    ai_row, ai_col = self.minimax_ai.best_move(self.game.board, depth_limit=5)
+                elif self.selected_ai == "Q-Learning":
+                    ai_row, ai_col = self.q_learning_ai.best_move(self.game.board)
+                elif self.selected_ai == "DQN" and self.dqn_ai:
+                    ai_row, ai_col = self.dqn_ai.best_move(self.game.board)
+                elif self.selected_ai == "MCTS" and self.mcts_ai:
+                    self.mcts_ai.set_player('X' if self.player_marker == 'O' else 'O')
+                    ai_row, ai_col = self.mcts_ai.best_move(self.game.board, time_limit=2.0)
+                else:
+                    valid_moves = self.game.get_available_moves()
+                    ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
+            except Exception as e:
+                print(f"AI error: {e}. Using random fallback.")
+                valid_moves = self.game.get_available_moves()
+                ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
+                
+            # Make AI's move
+            if self.game.make_move(ai_row, ai_col):
+                # Create animation for AI move
+                cell_width = (self.WIDTH-200) // self.BOARD_COLS
+                cell_height = (self.HEIGHT-350) // self.BOARD_ROWS
+                center_x = ai_col * cell_width + 100 + cell_width // 2
+                center_y = ai_row * cell_height + 200 + cell_height // 2
+                    
+                size = min(cell_width, cell_height) // 2 - 15
+                self.animations.append(
+                    MarkAnimation(
+                        self.game.board[ai_row][ai_col],
+                        center_x,
+                        center_y,
+                        size
+                    )
+                )
 
     def run_game(self):
         if not self.main_menu():
@@ -587,7 +627,7 @@ class TicTacToeGUI:
                                 
                             try:
                                 if self.selected_ai == "Minimax":
-                                    ai_row, ai_col = self.minimax_ai.best_move(self.game.board)
+                                    ai_row, ai_col = self.minimax_ai.best_move(self.game.board, depth_limit=4)
                                 elif self.selected_ai == "Q-Learning":
                                     ai_row, ai_col = self.q_learning_ai.best_move(self.game.board)
                                 elif self.selected_ai == "DQN" and self.dqn_ai:
@@ -604,22 +644,22 @@ class TicTacToeGUI:
                                 valid_moves = self.game.get_available_moves()
                                 ai_row, ai_col = random.choice(valid_moves) if valid_moves else (0, 0)
                                 
-                                if self.game.make_move(ai_row, ai_col):
-                                    # Create animation for AI move
-                                    cell_width = (self.WIDTH-200) // self.BOARD_COLS
-                                    cell_height = (self.HEIGHT-350) // self.BOARD_ROWS
-                                    center_x = ai_col * cell_width + 100 + cell_width // 2
-                                    center_y = ai_row * cell_height + 200 + cell_height // 2
+                            if self.game.make_move(ai_row, ai_col):
+                                # Create animation for AI move
+                                cell_width = (self.WIDTH-200) // self.BOARD_COLS
+                                cell_height = (self.HEIGHT-350) // self.BOARD_ROWS
+                                center_x = ai_col * cell_width + 100 + cell_width // 2
+                                center_y = ai_row * cell_height + 200 + cell_height // 2
                                     
-                                    size = min(cell_width, cell_height) // 2 - 15
-                                    self.animations.append(
-                                        MarkAnimation(
-                                            self.game.board[ai_row][ai_col],
-                                            center_x,
-                                            center_y,
-                                            size
-                                        )
+                                size = min(cell_width, cell_height) // 2 - 15
+                                self.animations.append(
+                                    MarkAnimation(
+                                        self.game.board[ai_row][ai_col],
+                                        center_x,
+                                        center_y,
+                                        size
                                     )
+                                )
         pygame.quit()
     
 
