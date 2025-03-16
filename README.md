@@ -32,8 +32,8 @@ The game provides a graphical user interface built with Pygame, allowing players
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/ttt-gpt.git
-cd ttt-gpt
+git clone https://github.com/garg-tejas/tic-tac-toe-RL.git
+cd tic-tac-toe-RL
 ```
 
 ### 2. Set Up Virtual Environment
@@ -69,7 +69,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ## Project Structure
 
 ```plaintext
-ttt-gpt/
+tic-tac-toe-RL/
 ├── main.py                      # Main entry point
 ├── gui.py                       # GUI implementation using Pygame
 ├── game.py                      # Core game logic
