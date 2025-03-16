@@ -597,8 +597,59 @@ class QLearningTicTacToe:
                 wins, losses, draws = 0, 0, 0
 
     def play_move(self, board):
-        """Make a move during an actual game."""
-        return self.choose_action(board, q_table=self.q_table, game_mode=True, use_ucb=False)
+        """Make a move during an actual game with enhanced move selection."""
+        board_1d = self.convert_2d_to_1d(board) if isinstance(board, list) and len(board) <= 3 else board
+        
+        # First check for immediate winning move
+        winning_move = self.find_winning_move(board_1d, self.player)
+        if winning_move is not None:
+            return winning_move
+        
+        # Then check for immediate blocking move
+        opponent = 'X' if self.player == 'O' else 'O'
+        blocking_move = self.find_winning_move(board_1d, opponent)
+        if blocking_move is not None:
+            return blocking_move
+        
+        # Use fork strategy if possible
+        fork_move = self.find_fork_move(board_1d, self.player)
+        if fork_move is not None:
+            return fork_move
+        
+        # Block opponent's fork
+        opponent_fork = self.find_fork_move(board_1d, opponent)
+        if opponent_fork is not None:
+            return opponent_fork
+        
+        # Otherwise use Q-table with temperature-based selection
+        state_key = self.get_state_key(board_1d)
+        valid_moves = self.get_valid_moves(board_1d)
+        
+        if state_key in self.q_table:
+            q_values = np.array(self.q_table[state_key])
+            
+            # Mask invalid moves
+            masked_q_values = np.full(9, -float('inf'))
+            for move in valid_moves:
+                masked_q_values[move] = q_values[move]
+            
+            # Temperature-based selection
+            temperature = 0.5
+            exp_values = np.exp(masked_q_values/temperature)
+            probs = exp_values / np.sum(exp_values)
+            
+            return np.random.choice(9, p=probs)
+        else:
+            # If state not in Q-table, use heuristics
+            if board_1d[4] == " ":  # Take center if available
+                return 4
+            
+            # Take corner if available
+            for corner in [0, 2, 6, 8]:
+                if board_1d[corner] == " ":
+                    return corner
+            
+            return random.choice(valid_moves)
     
     def best_move(self, board_2d):
         """Return the best move as (row, col) coordinates."""
@@ -905,7 +956,6 @@ class QLearningTicTacToe:
             plot_path = get_plot_path("q_learning")
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             print(f"Training plot saved to {plot_path}")
-            plt.show()
             
         except ImportError as e:
             print(f"Required plotting libraries not available: {e}")

@@ -8,14 +8,17 @@ import os
 from utils import get_model_path, get_plot_path
 
 class DQN(nn.Module):
-    def __init__(self, input_size=12, hidden_size=128, output_size=9):
+    def __init__(self, input_size=12, hidden_size=256, output_size=9):
         super(DQN, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),  # Add batch normalization
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size // 2),
+            nn.BatchNorm1d(hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, output_size)
         )
@@ -103,10 +106,20 @@ class DQNTicTacToe:
         # Add feature: center control
         center_control = 1.0 if canonical_board[4] == self.player else -1.0 if canonical_board[4] == opponent else 0.0
         
-        # Combine all features
+        # Combine all features            
         enhanced_state = basic_state + [player_two_in_rows/3.0, opponent_two_in_rows/3.0, center_control]
-        
-        return torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).unsqueeze(0)
+            
+        tensor_state = torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).unsqueeze(0)
+            
+        # Set BatchNorm layers to eval mode for single samples
+        if tensor_state.size(0) == 1 and self.training:
+            was_training = True
+            self.policy_net.eval()
+        else:
+            was_training = False
+            
+        # Return with proper handling for inference vs training
+        return tensor_state, was_training
     
     def get_canonical_state(self, board):
         """Convert board to canonical form using board symmetry."""
@@ -141,14 +154,41 @@ class DQNTicTacToe:
             
         # Use lower epsilon during actual gameplay for less randomness
         explore_rate = 0.0 if game_mode else self.epsilon
-
+    
         if random.uniform(0, 1) < explore_rate:
             return random.choice(valid_moves)  # Explore
         
-        state = self.get_state(board)
-        q_values = self.policy_net(state).detach().cpu().numpy()[0]
+        state, was_training = self.get_state(board)
+        
+        # Always use eval mode for forward pass with single samples
+        self.policy_net.eval()
+        with torch.no_grad():
+            q_values = self.policy_net(state).cpu().numpy()[0]
+        
+        # Only restore training mode after the forward pass is complete
+        if was_training:
+            self.policy_net.train()
+            
         valid_q_values = [(q_values[i], i) for i in valid_moves]
         return max(valid_q_values)[1]  # Best valid move
+    
+    def get_q_values(self, state):
+        """Safely get Q-values handling BatchNorm with single samples."""
+        # Store current training state
+        was_training = self.policy_net.training
+        
+        # Always use eval mode for inference with single samples
+        self.policy_net.eval()
+        
+        # Get Q-values
+        with torch.no_grad():
+            q_values = self.policy_net(state).cpu().numpy()[0]
+        
+        # Restore previous training mode if needed
+        if was_training:
+            self.policy_net.train()
+            
+        return q_values
     
     def store_experience(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
@@ -257,12 +297,14 @@ class DQNTicTacToe:
             best_move = self.get_expert_move(board, current_player)
             if best_move is not None:
                 # Create target Q-values - high for best move, low for others
-                state = self.get_state(board)
-                
+                state, was_training = self.get_state(board)
+                self.policy_net.eval()
                 # Get current Q-value predictions as starting point
                 with torch.no_grad():
                     q_values = self.policy_net(state).squeeze().cpu().numpy()
                 
+                if was_training:
+                    self.policy_net.train()
                 # Modify Q-values to favor expert move
                 for action in range(9):
                     if action == best_move:
@@ -291,6 +333,8 @@ class DQNTicTacToe:
             num_batches = 0
             
             for i in range(0, len(shuffled_states), batch_size):
+                if len(shuffled_states[i:i+batch_size]) < 2:
+                    continue 
                 batch_states = torch.cat(shuffled_states[i:i+batch_size])
                 batch_targets = torch.stack(shuffled_targets[i:i+batch_size])
                 
@@ -423,7 +467,9 @@ class DQNTicTacToe:
             game_history = []
             
             while not done:
-                state = self.get_state(board)
+                state, was_training = self.get_state(board)
+                if was_training:
+                    self.policy_net.train()
                 
                 # Choose action for current player
                 if current_player == self.player:
@@ -437,7 +483,9 @@ class DQNTicTacToe:
                 
                 # Make move
                 board[action] = current_player
-                next_state = self.get_state(board)
+                next_state, was_training = self.get_state(board)
+                if was_training:
+                    self.policy_net.train()
                 
                 # Get reward from current player's perspective
                 if current_player == self.player:
@@ -565,9 +613,57 @@ class DQNTicTacToe:
             return "draw"
         return None
     
+    def warmup_model(self):
+        """Warm up the model with batched inputs to initialize BatchNorm layers properly."""
+        print("Warming up model for BatchNorm initialization...")
+        self.policy_net.train()
+        
+        # Generate a batch of random states
+        batch_size = 32
+        random_inputs = torch.randn(batch_size, 12, device=self.device)
+        
+        # Forward pass to initialize BatchNorm statistics
+        with torch.no_grad():
+            _ = self.policy_net(random_inputs)
+        
+        # Call after model loading or initialization
+        print("Model warmup complete")
+
     def play_move(self, board):
-        """Make a move during an actual game."""
-        return self.choose_action(board, game_mode=True)
+        """Make a move during an actual game with enhanced move selection."""
+        valid_moves = self.get_valid_moves(board)
+        state, _ = self.get_state(board)
+        
+        # First check for immediate winning move
+        winning_move = self.find_winning_move(board, self.player)
+        if winning_move is not None:
+            return winning_move
+        
+        # Then check for opponent winning move to block
+        opponent = 'X' if self.player == 'O' else 'O'
+        blocking_move = self.find_winning_move(board, opponent)
+        if blocking_move is not None:
+            return blocking_move
+        
+        # Otherwise use DQN with temperature-based selection
+        q_values = self.get_q_values(state)
+        
+        # Only consider valid moves
+        masked_q_values = np.full(9, -float('inf'))
+        for move in valid_moves:
+            masked_q_values[move] = q_values[move]
+        
+        # Prevent numeric overflow by handling extreme values
+        masked_q_values = np.where(masked_q_values == -float('inf'), -1e10, masked_q_values)
+        
+        # Temperature-based selection (lower temperature = more greedy)
+        temperature = 0.5
+        # Subtract max for numerical stability
+        max_q = np.max(masked_q_values)
+        exp_values = np.exp((masked_q_values - max_q) / temperature)
+        probs = exp_values / (np.sum(exp_values) + 1e-10)  # Prevent division by zero
+        
+        return np.random.choice(9, p=probs)
     
     def save_model(self, filename=None):
         # Save model weights
@@ -630,9 +726,15 @@ class DQNTicTacToe:
         # Ensure consistent player assignment
         self.set_player("O")  # Agent plays as O
         
+        # Warm up model for BatchNorm
+        self.warmup_model()
+        
         # Stage 1: Expert pre-training
         print("Stage 1: Pre-training on expert moves...")
         self.pretrain_on_expert_moves(num_examples=5000, epochs=5)
+        
+        # Warm up again after pre-training
+        self.warmup_model()
         
         # Stage 2: Training against random
         print("Stage 2: Training against random opponent...")
@@ -665,14 +767,18 @@ class DQNTicTacToe:
             
             while not done:
                 # Store the initial state before agent's move
-                current_state = self.get_state(board)
+                current_state, was_training = self.get_state(board)
+                if was_training:
+                    self.policy_net.train()
     
                 # DQN agent's turn
                 action = self.choose_action(board)
                 board[action] = self.player
     
                 # Get state after agent's move
-                agent_next_state = self.get_state(board)
+                agent_next_state, was_training = self.get_state(board)
+                if was_training:
+                    self.policy_net.train()
                 reward, done = self.reward_function(board)
     
                 # Store experience just for the agent's move
@@ -760,14 +866,18 @@ class DQNTicTacToe:
             
             while not done:
                 # Store current state before agent's move
-                current_state = self.get_state(board)
+                current_state, was_training = self.get_state(board)
+                if was_training:
+                    self.policy_net.train()
                 
                 # DQN agent's turn
                 action = self.choose_action(board)
                 board[action] = self.player
                 
                 # Get state after agent's move
-                agent_next_state = self.get_state(board)
+                agent_next_state, was_training = self.get_state(board)
+                if was_training:
+                    self.policy_net.train()
                 reward, done = self.reward_function(board)
                 
                 # Store experience just for the agent's move
@@ -921,7 +1031,6 @@ class DQNTicTacToe:
             
             # Save with high DPI
             plt.savefig(get_plot_path("dqn"), dpi=300, bbox_inches='tight')
-            plt.show()
             
         except ImportError as e:
             print(f"Required plotting libraries not available: {e}")

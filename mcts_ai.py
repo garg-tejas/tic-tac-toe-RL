@@ -152,9 +152,33 @@ class MCTSAI:
         
     def best_move(self, board_2d, time_limit=None, temperature=None):
         """Return the best move within a time limit (seconds) using GPU batch processing."""
-        # Use passed parameters or default instance values
-        time_limit = time_limit if time_limit is not None else self.time_limit
-        temperature = temperature if temperature is not None else self.temperature
+        # Increase time limit for more thinking time
+        time_limit = time_limit if time_limit is not None else 1.5  # Increased from 0.5
+        
+        # Use lower temperature for better move selection
+        temperature = temperature if temperature is not None else 0.05  # More deterministic
+        
+        # Check for immediate winning move first
+        for row in range(3):
+            for col in range(3):
+                if board_2d[row][col] is None:
+                    board_copy = copy.deepcopy(board_2d)
+                    board_copy[row][col] = self.player
+                    if self.check_winner(board_copy) == self.player:
+                        return (row, col)
+        
+        # Check for opponent's winning move to block
+        opponent = 'O' if self.player == 'X' else 'X'
+        for row in range(3):
+            for col in range(3):
+                if board_2d[row][col] is None:
+                    board_copy = copy.deepcopy(board_2d)
+                    board_copy[row][col] = opponent
+                    if self.check_winner(board_copy) == opponent:
+                        return (row, col)
+        
+        # Continue with regular MCTS but with increased simulations
+        # ... rest of your code with the increased time_limit and lower temperature
         
         # Create root node
         root = self.node_pool.get_node(board_2d, player=self.player)
@@ -675,7 +699,7 @@ class MCTSAI:
                 
                 if current_player == mcts_player:
                     # MCTS player's turn
-                    move = self.best_move(board, time_limit=0.5)
+                    move = self.best_move(board, time_limit=0.1)
                     
                     # Store move information for policy training
                     if game_history:
@@ -911,18 +935,6 @@ class MCTSAI:
                          label='Losses', color='red', ax=ax)
             sns.lineplot(x='Episode', y='Draw Rate', data=df,
                          label='Draws', color='blue', ax=ax)
-            
-            try:
-                # Add smoothed trend lines if we have enough data points
-                if len(episodes) >= 4:
-                    sns.regplot(x='Episode', y='Win Rate', data=df, scatter=False, 
-                              lowess=True, line_kws={'color': 'green', 'alpha': 0.7, 'lw': 2}, ax=ax)
-                    sns.regplot(x='Episode', y='Loss Rate', data=df, scatter=False, 
-                              lowess=True, line_kws={'color': 'red', 'alpha': 0.7, 'lw': 2}, ax=ax)
-                    sns.regplot(x='Episode', y='Draw Rate', data=df, scatter=False, 
-                              lowess=True, line_kws={'color': 'blue', 'alpha': 0.7, 'lw': 2}, ax=ax)
-            except:
-                pass  # Skip trend lines if statsmodels not available
             
             # Enhance the plot
             plt.title('MCTS Agent Training Progress', fontsize=16, pad=20)
