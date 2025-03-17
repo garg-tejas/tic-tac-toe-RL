@@ -1,4 +1,4 @@
-# Tic-Tac-Toe AI Game with Multiple AI Implementations
+# Vibe Coding Tic-Tac-Toe Game with Multiple AI Implementations
 
 ## Overview
 
